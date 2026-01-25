@@ -31,10 +31,9 @@ python metashape_360_to_colmap.py \
   --xml /path/to/metashape_cameras.xml \ # Specify xml exported from Metashape
   --output /path/to/output_colmap \
   --ply /path/to/pointcloud.ply \ # Specify ply exported from Metashape
-  --crop-size 1024 \
+  --crop-size 1920 \ 
   --fov-deg 90 \
-  --max-images 50 \
-  --flip-vertical          # default on; remove with --no-flip-vertical
+  --max-images 50 \ # If you test quickly, specify small number. default 10000
 ```
 
 ### Key options / 主なオプション
