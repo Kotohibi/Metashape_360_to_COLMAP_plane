@@ -28,9 +28,9 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
 ```bash
 python metashape_360_to_colmap.py \
   --images /path/to/equirect_frames \
-  --xml /path/to/metashape_cameras.xml \
+  --xml /path/to/metashape_cameras.xml \ # Specify xml exported from Metashape
   --output /path/to/output_colmap \
-  --ply /path/to/pointcloud.ply \
+  --ply /path/to/pointcloud.ply \ # Specify ply exported from Metashape
   --crop-size 1024 \
   --fov-deg 90 \
   --max-images 50 \
