@@ -21,8 +21,9 @@ Dependencies:
 
 import argparse
 import xml.etree.ElementTree as ET
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
 import cv2
@@ -191,6 +192,32 @@ def quaternion_from_matrix(R: np.ndarray) -> np.ndarray:
     return q / np.linalg.norm(q)
 
 
+def crop_and_save_image(
+    image_path: str,
+    direction: str,
+    crop_size: int,
+    output_image_path: str,
+    fov_deg: float = 90.0,
+    flip_vertical: bool = True,
+) -> Tuple[str, str, str, np.ndarray]:
+    """Crop equirectangular image and save. Returns (direction, output_name, output_path, metadata)."""
+    equirect_image = Image.open(image_path)
+    if equirect_image.mode != "RGB":
+        equirect_image = equirect_image.convert("RGB")
+    
+    cropped = crop_direction(
+        equirect_image,
+        direction,
+        crop_size,
+        fov_deg=fov_deg,
+        flip_vertical=flip_vertical,
+    )
+    cropped.save(output_image_path, quality=95)
+    
+    output_name = Path(output_image_path).name
+    return (direction, output_name, output_image_path, np.array([]))
+
+
 def crop_direction(
     equirect_image: Image.Image,
     direction: str,
@@ -252,6 +279,7 @@ def convert_metashape_to_colmap(
     max_images: Optional[int] = None,
     flip_vertical: bool = True,
     verbose: bool = True,
+    num_workers: int = 4,
 ) -> Dict[str, Any]:
     """Convert Metashape equirectangular data to COLMAP format."""
     if output_dir is None:
@@ -269,7 +297,7 @@ def convert_metashape_to_colmap(
     component_dict = xml_data["component_dict"]
     cameras_xml = xml_data["cameras"]
 
-    image_extensions = [".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp",".JPG", ".JPEG", ".PNG", ".TIFF", ".TIF", ".WEBP"]
+    image_extensions = [".jpg", ".jpeg", ".png", ".tiff", ".tif", ".webp"]
     image_files = []
     for ext in image_extensions:
         image_files.extend(images_dir.glob(f"*{ext}"))
@@ -298,6 +326,10 @@ def convert_metashape_to_colmap(
     processed_cameras = 0
     num_skipped = 0
     directions = ["front", "right", "back", "left"]
+
+    # Collect all crop tasks for parallel processing
+    crop_tasks = []  # List of (src_image_path, base_name, direction, R_c2w, t_c2w, camera_label)
+    camera_metadata = []  # Store metadata for later processing
 
     for camera in cameras_xml.iter("camera"):
         if max_images is not None and processed_cameras >= max_images:
@@ -337,9 +369,9 @@ def convert_metashape_to_colmap(
 
         src_image_path = image_filename_map[camera_label]
         try:
-            equirect_image = Image.open(src_image_path)
-            if equirect_image.mode != "RGB":
-                equirect_image = equirect_image.convert("RGB")
+            # Test if image can be loaded
+            test_img = Image.open(src_image_path)
+            test_img.close()
         except Exception as exc:  # pragma: no cover - IO guard
             if verbose:
                 print(f"  Skipping {camera_label}: failed to load image ({exc})")
@@ -351,34 +383,50 @@ def convert_metashape_to_colmap(
 
         base_name = Path(camera_label).stem
 
+        # Queue tasks for each direction
         for direction in directions:
-            cropped = crop_direction(
-                equirect_image,
-                direction,
-                crop_size,
-                fov_deg=fov_deg,
-                flip_vertical=flip_vertical,
-            )
             output_image_name = f"{base_name}_{direction}.jpg"
-            output_image_path = images_output_dir / output_image_name
-            cropped.save(output_image_path, quality=95)
+            output_image_path = str(images_output_dir / output_image_name)
+            crop_tasks.append((str(src_image_path), direction, crop_size, output_image_path, fov_deg, flip_vertical))
+            camera_metadata.append((base_name, direction, R_c2w, t_c2w))
 
-            R_dir = get_direction_rotation_matrix(direction)
-            R_c2w_dir = R_c2w @ R_dir  # align extrinsics with the rotated crop
-
-            R_w2c = R_c2w_dir.T
-            t_w2c = -R_w2c @ t_c2w
-            q = quaternion_from_matrix(R_w2c)
-
-            images_colmap[image_id] = {
-                "quat": q,  # [x, y, z, w]
-                "tvec": t_w2c,
-                "camera_id": camera_id,
-                "name": output_image_name,
-            }
-            image_id += 1
-            processed_images += 1
         processed_cameras += 1
+
+    # Process crops in parallel
+    if crop_tasks:
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = [
+                executor.submit(crop_and_save_image, *task)
+                for task in crop_tasks
+            ]
+            
+            for idx, future in enumerate(futures):
+                try:
+                    future.result()
+                except Exception as exc:
+                    if verbose:
+                        print(f"  Error processing crop {idx}: {exc}")
+                    continue
+
+    # Build images_colmap from results
+    for idx, (base_name, direction, R_c2w, t_c2w) in enumerate(camera_metadata):
+        output_image_name = f"{base_name}_{direction}.jpg"
+        
+        R_dir = get_direction_rotation_matrix(direction)
+        R_c2w_dir = R_c2w @ R_dir  # align extrinsics with the rotated crop
+
+        R_w2c = R_c2w_dir.T
+        t_w2c = -R_w2c @ t_c2w
+        q = quaternion_from_matrix(R_w2c)
+
+        images_colmap[image_id] = {
+            "quat": q,  # [x, y, z, w]
+            "tvec": t_w2c,
+            "camera_id": camera_id,
+            "name": output_image_name,
+        }
+        image_id += 1
+        processed_images += 1
 
     if verbose:
         print(f"Processed {processed_images} cropped images")
@@ -501,6 +549,7 @@ def main() -> int:
         help="Disable vertical flip if your data is already upright",
     )
     parser.add_argument("--max-images", type=int, default=10000, help="Optional limit on number of equirectangular images to process (for quick tests)")
+    parser.add_argument("--num-workers", type=int, default=4, help="Number of worker processes for parallel image cropping")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
 
     args = parser.parse_args()
@@ -525,6 +574,7 @@ def main() -> int:
             fov_deg=args.fov_deg,
             flip_vertical=args.flip_vertical,
             max_images=args.max_images,
+            num_workers=args.num_workers,
             verbose=not args.quiet,
         )
         if not args.quiet:
