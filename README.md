@@ -21,6 +21,9 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
 ## Usage / 使い方
 ### SfM with Camera type as Spherical in Metashape
 - [Tools] -> [Camera Calibration] -> [Camera type] -> [Spherical]
+### Export Cameras as XML and Point cloud as PLY files from Metashape
+- [File] -> [Export Cameras...] -> select xml type
+- [File] -> [Export Point Cloud...] -> select ply type
 ### Python CLI
 ```bash
 python metashape_360_to_colmap.py \
