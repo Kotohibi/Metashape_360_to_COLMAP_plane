@@ -1,0 +1,60 @@
+# Metashape 360° to COLMAP Converter
+
+English | 日本語
+
+## Overview / 概要
+Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP text format, while generating rectilinear crops (front/right/back/left) from each 360° frame. Optional PLY is converted to points3D.txt (via Open3D).
+
+## Features / 特長
+- Equirectangular → 4 rectilinear 90° crops per frame (front/right/back/left)
+- Writes COLMAP `cameras.txt`, `images.txt`, `points3D.txt`
+- Optional PLY transform/export (needs Open3D)
+- Adjustable FoV and crop size; vertical flip for sampling equirect
+- Optional image-count cap for quick tests
+
+## Requirements / 必要環境
+- Metashape Standard (https://www.agisoft.com/features/standard-edition/)
+- Python 3.9+
+- pip: `numpy`, `pillow`, `opencv-python`
+- Optional: `open3d` (for PLY → points3D)
+
+## Usage / 使い方
+### SfM with Camera type as Spherical in Metashape
+- [Tools] -> [Camera Calibration] -> [Camera type] -> [Spherical]
+### Python CLI
+```bash
+python metashape_360_to_colmap.py \
+  --images /path/to/equirect_frames \
+  --xml /path/to/metashape_cameras.xml \
+  --output /path/to/output_colmap \
+  --ply /path/to/pointcloud.ply \
+  --crop-size 1024 \
+  --fov-deg 90 \
+  --max-images 50 \
+  --flip-vertical          # default on; remove with --no-flip-vertical
+```
+
+### Key options / 主なオプション
+- `--images` (req): Directory of equirectangular images
+- `--xml` (req): Metashape XML export (cameras)
+- `--output` (req): Output folder (COLMAP text + crops in `images/`)
+- `--ply`: Optional PLY to export `points3D.txt` and `points3D.ply`
+- `--crop-size`: Crop resolution (square). Default 1024.
+- `--fov-deg`: Horizontal FoV of rectilinear crops. Default 90.
+- `--flip-vertical` / `--no-flip-vertical`: Flip equirect sampling vertically (default on)
+- `--max-images`: Limit number of source equirects for quick tests (default 50)
+
+### Outputs / 出力
+- `output/ images/`: Cropped images (4 per input frame)
+- `output/ cameras.txt`
+- `output/ images.txt`
+- `output/ points3D.txt` (+ `points3D.ply` when PLY given)
+
+## Notes / 補足
+- I confirmed that it worked with PostShot for 3DGS train.
+- Only spherical sensors are supported; uses the first component transform when multiple are present.
+- Intrinsics per crop are PINHOLE with `fx=fy=(w/2)/tan(fov/2)`, `cx=cy=w/2`.
+- If orientations look wrong, verify front/right/back/left yaw definitions and FoV.
+
+## License / ライセンス
+MIT
