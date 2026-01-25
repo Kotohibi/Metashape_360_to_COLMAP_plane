@@ -411,7 +411,7 @@ def convert_metashape_to_colmap(
             f.write(
                 f"{img_id} {q[3]} {q[0]} {q[1]} {q[2]} {t[0]} {t[1]} {t[2]} {img_data['camera_id']} {img_data['name']}\n"
             )
-            f.write("\n")
+            f.write(" \n") #LFS needs one space
 
     points3d_data = []
     if ply_path is not None and ply_path.exists() and HAS_OPEN3D:
