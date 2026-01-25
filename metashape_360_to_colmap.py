@@ -280,6 +280,7 @@ def convert_metashape_to_colmap(
     flip_vertical: bool = True,
     verbose: bool = True,
     num_workers: int = 4,
+    skip_component_transform_for_ply: bool = True,
 ) -> Dict[str, Any]:
     """Convert Metashape equirectangular data to COLMAP format."""
     if output_dir is None:
@@ -307,6 +308,10 @@ def convert_metashape_to_colmap(
 
     if verbose:
         print(f"Found {len(image_files)} equirectangular images in {images_dir}")
+        print(f"Component dict size: {len(component_dict)}")
+        if component_dict:
+            for comp_id, comp_mat in component_dict.items():
+                print(f"  Component '{comp_id}': {comp_mat}")
 
     camera_id = 1  # single shared intrinsic entry
     fx = fy = (crop_size / 2.0) / np.tan(np.deg2rad(fov_deg) / 2.0)
@@ -366,6 +371,10 @@ def convert_metashape_to_colmap(
         component_id = camera.get("component_id")
         if component_id in component_dict:
             transform = component_dict[component_id] @ transform
+            if verbose and processed_cameras == 0:
+                print(f"First camera '{camera_label}' component_id: {component_id} (found in component_dict)")
+        elif verbose and processed_cameras == 0:
+            print(f"First camera '{camera_label}' component_id: {component_id} (NOT found in component_dict)")
 
         src_image_path = image_filename_map[camera_label]
         try:
@@ -382,6 +391,13 @@ def convert_metashape_to_colmap(
         t_c2w = transform[:3, 3]
 
         base_name = Path(camera_label).stem
+
+        # Debug output for first valid camera
+        if verbose and processed_cameras == 0:
+            print(f"First valid camera '{camera_label}':")
+            print(f"  Raw transform (after component): \n{transform}")
+            print(f"  R_c2w:\n{R_c2w}")
+            print(f"  t_c2w: {t_c2w}")
 
         # Queue tasks for each direction
         for direction in directions:
@@ -478,9 +494,18 @@ def convert_metashape_to_colmap(
             if verbose:
                 print("  Multiple components detected; using the first component transform")
 
-        if comp_transform is not None:
+        if comp_transform is not None and not skip_component_transform_for_ply:
+            if verbose:
+                print(f"  Component transform being applied to points:")
+                print(f"    Comp transform:\n{comp_transform}")
             points_h = np.hstack([points3d, np.ones((len(points3d), 1))])
+            points3d_original = points3d.copy()
             points3d = (comp_transform @ points_h.T).T[:, :3]
+            if verbose:
+                print(f"    First 3 points before: {points3d_original[:3]}")
+                print(f"    First 3 points after: {points3d[:3]}")
+        elif skip_component_transform_for_ply and verbose:
+            print(f"  Skipping component transform for PLY (--skip-component-transform-for-ply enabled)")
 
         for idx, point in enumerate(points3d, start=1):
             x, y, z = point
@@ -550,6 +575,7 @@ def main() -> int:
     )
     parser.add_argument("--max-images", type=int, default=10000, help="Optional limit on number of equirectangular images to process (for quick tests)")
     parser.add_argument("--num-workers", type=int, default=4, help="Number of worker processes for parallel image cropping")
+    parser.add_argument("--apply-component-transform-for-ply", action="store_true", default=False, help="Apply component transform for PLY (default: disabled, as PLY is usually pre-transformed in Metashape)")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
 
     args = parser.parse_args()
@@ -575,6 +601,7 @@ def main() -> int:
             flip_vertical=args.flip_vertical,
             max_images=args.max_images,
             num_workers=args.num_workers,
+            skip_component_transform_for_ply=not args.apply_component_transform_for_ply,
             verbose=not args.quiet,
         )
         if not args.quiet:
