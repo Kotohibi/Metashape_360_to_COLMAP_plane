@@ -45,7 +45,6 @@ python metashape_360_to_colmap.py \
 - `--ply`: Optional PLY to export `points3D.txt` and `points3D.ply`
 - `--crop-size`: Crop resolution (square). Default 1920.
 - `--fov-deg`: Horizontal FoV of rectilinear crops. Default 90.
-- `--flip-vertical` / `--no-flip-vertical`: Flip equirect sampling vertically (default on)
 - `--max-images`: Limit number of source equirects for quick tests (default 10000)
 - `--num-workers`: Number of process for image reframing (default 4)
 - `--skip-bottom`: Ignore bottom images for 3DGS training (default false)
