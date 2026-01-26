@@ -3,7 +3,7 @@
 Metashape equirectangular XML → COLMAP converter
 
 - Reads Metashape XML camera poses (equirectangular capture) and optional PLY.
-- For each equirectangular frame, slices four 90° views (front/right/back/left)
+- For each equirectangular frame, slices six 90° views (top/front/right/back/left/bottom)
   into square crops and saves them under <output>/images/.
 - Writes COLMAP-compatible cameras.txt, images.txt, and points3D.txt.
 
@@ -137,27 +137,57 @@ def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
 
 
 def get_direction_rotation_matrix(direction: str) -> np.ndarray:
-    """Rotation matrix for a 90° yaw step (front/right/back/left)."""
+    """Rotation matrix for direction views: yaw for cardinal directions, pitch for top/bottom."""
     yaw_deg = direction_yaw_deg(direction)
+    pitch_deg = direction_pitch_deg(direction)
+    
+    # First apply yaw rotation (about Y-axis)
     yaw = np.radians(yaw_deg)
     cos_y = np.cos(yaw)
     sin_y = np.sin(yaw)
-    return np.array([
+    R_yaw = np.array([
         [cos_y, 0, sin_y],
         [0, 1, 0],
         [-sin_y, 0, cos_y],
     ])
+    
+    # Then apply pitch rotation (about X-axis)
+    pitch = np.radians(pitch_deg)
+    cos_p = np.cos(pitch)
+    sin_p = np.sin(pitch)
+    R_pitch = np.array([
+        [1, 0, 0],
+        [0, cos_p, -sin_p],
+        [0, sin_p, cos_p],
+    ])
+    
+    return R_yaw @ R_pitch
 
 
 def direction_yaw_deg(direction: str) -> float:
-    """Canonical yaw (deg) for each cardinal crop; keep shared between remap and extrinsics."""
+    """Canonical yaw (deg) for each crop; keep shared between remap and extrinsics."""
     yaw_angles = {
+        "top": 0.0,
         "front": 0.0,
         "right": -90.0,
         "back": 180.0,
         "left": 90.0,
+        "bottom": 0.0,
     }
     return yaw_angles[direction]
+
+
+def direction_pitch_deg(direction: str) -> float:
+    """Canonical pitch (deg) for each crop; 90° for top, -90° for bottom, 0° for others."""
+    pitch_angles = {
+        "top": 90.0,
+        "front": 0.0,
+        "right": 0.0,
+        "back": 0.0,
+        "left": 0.0,
+        "bottom": -90.0,
+    }
+    return pitch_angles[direction]
 
 
 def quaternion_from_matrix(R: np.ndarray) -> np.ndarray:
@@ -225,8 +255,10 @@ def crop_direction(
     fov_deg: float = 90.0,
     flip_vertical: bool = True,
 ) -> Image.Image:
-    """Rectilinear 90° crop from equirectangular using cv2.remap (no wrap seams)."""
-    yaw_deg = direction_yaw_deg(direction)
+    """Rectilinear 90° crop from equirectangular using cv2.remap (cube map layout).
+    
+    Extracts 6 directions (top/front/right/back/left/bottom) like a cube map unfolding.
+    """
     # Prepare output grid (pixel centers).
     w_out = h_out = crop_size
     fx = fy = (w_out / 2.0) / np.tan(np.deg2rad(fov_deg) / 2.0)
@@ -238,12 +270,9 @@ def crop_direction(
     dirs = np.stack([x, y, z], axis=-1)
     dirs /= np.linalg.norm(dirs, axis=-1, keepdims=True)
 
-    # Yaw rotation per face (right-handed, yaw about +Y).
-    yaw = np.deg2rad(yaw_deg)
-    cos_y = np.cos(yaw)
-    sin_y = np.sin(yaw)
-    R_y = np.array([[cos_y, 0, sin_y], [0, 1, 0], [-sin_y, 0, cos_y]], dtype=np.float32)
-    dirs = dirs @ R_y.T
+    # Apply rotation matrix for this direction (both yaw and pitch).
+    R = get_direction_rotation_matrix(direction).astype(np.float32)
+    dirs = dirs @ R.T
 
     # Convert direction vectors to equirectangular UV.
     lon = np.arctan2(dirs[..., 0], dirs[..., 2])  # [-pi, pi]
@@ -281,6 +310,7 @@ def convert_metashape_to_colmap(
     verbose: bool = True,
     num_workers: int = 4,
     skip_component_transform_for_ply: bool = True,
+    skip_bottom: bool = False,
 ) -> Dict[str, Any]:
     """Convert Metashape equirectangular data to COLMAP format."""
     if output_dir is None:
@@ -330,7 +360,9 @@ def convert_metashape_to_colmap(
     processed_images = 0
     processed_cameras = 0
     num_skipped = 0
-    directions = ["front", "right", "back", "left"]
+    directions = ["top", "front", "right", "back", "left", "bottom"]
+    if skip_bottom:
+        directions = ["top", "front", "right", "back", "left"]
 
     # Collect all crop tasks for parallel processing
     crop_tasks = []  # List of (src_image_path, base_name, direction, R_c2w, t_c2w, camera_label)
@@ -576,6 +608,7 @@ def main() -> int:
     parser.add_argument("--max-images", type=int, default=10000, help="Optional limit on number of equirectangular images to process (for quick tests)")
     parser.add_argument("--num-workers", type=int, default=4, help="Number of worker processes for parallel image cropping")
     parser.add_argument("--apply-component-transform-for-ply", action="store_true", default=False, help="Apply component transform for PLY (default: disabled, as PLY is usually pre-transformed in Metashape)")
+    parser.add_argument("--skip-bottom", action="store_true", default=False, help="Skip bottom view (may contain self-reflections)")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
 
     args = parser.parse_args()
@@ -603,6 +636,7 @@ def main() -> int:
             num_workers=args.num_workers,
             skip_component_transform_for_ply=not args.apply_component_transform_for_ply,
             verbose=not args.quiet,
+            skip_bottom=args.skip_bottom,
         )
         if not args.quiet:
             print("\nConversion complete!")

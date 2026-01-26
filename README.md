@@ -3,10 +3,10 @@
 English | 日本語
 
 ## Overview / 概要
-Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP text format, while generating rectilinear crops (front/right/back/left) from each 360° frame. Optional PLY is converted to points3D.txt (via Open3D).
+Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP text format, while generating rectilinear crops (top/front/right/back/left/bottom) from each 360° frame. Optional PLY is converted to points3D.txt (via Open3D).
 
 ## Features / 特長
-- Equirectangular → 4 rectilinear 90° crops per frame (front/right/back/left), multi-process available
+- Equirectangular → Cubemap, 6 rectilinear 90° crops per frame (top/front/right/back/left/bottom), multi-process available
 - Writes COLMAP `cameras.txt`, `images.txt`, `points3D.txt`
 - Optional PLY transform/export (needs Open3D)
 - Adjustable FoV and crop size; vertical flip for sampling equirect
@@ -35,6 +35,7 @@ python metashape_360_to_colmap.py \
   --fov-deg 90 \
   --num-workers 4 \
   --max-images 50 \ # If you test quickly, specify small number. default 10000
+  --skip-bottom # Ignore bottom images (default false)
 ```
 
 ### Key options / 主なオプション
@@ -47,6 +48,7 @@ python metashape_360_to_colmap.py \
 - `--flip-vertical` / `--no-flip-vertical`: Flip equirect sampling vertically (default on)
 - `--max-images`: Limit number of source equirects for quick tests (default 10000)
 - `--num-workers`: Number of process for image reframing (default 4)
+- `--skip-bottom`: Ignore bottom images for 3DGS training (default false)
 
 ### Outputs / 出力
 - `output/ images/`: Cropped images (4 per input frame)
@@ -58,7 +60,7 @@ python metashape_360_to_colmap.py \
 - I confirmed that it worked with PostShot for 3DGS train.
 - Only spherical sensors are supported; uses the first component transform when multiple are present.
 - Intrinsics per crop are PINHOLE with `fx=fy=(w/2)/tan(fov/2)`, `cx=cy=w/2`.
-- If orientations look wrong, verify front/right/back/left yaw definitions and FoV.
+- If orientations look wrong, verify top/front/right/back/left/bottom yaw definitions and FoV.
 
 ## License / ライセンス
 MIT
