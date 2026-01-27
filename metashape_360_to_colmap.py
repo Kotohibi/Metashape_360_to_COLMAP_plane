@@ -36,6 +36,13 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     HAS_OPEN3D = False
 
+try:
+    from ultralytics import YOLO
+
+    HAS_YOLO = True
+except ImportError:  # pragma: no cover - optional dependency
+    HAS_YOLO = False
+
 
 def find_param(calib_xml: ET.Element, param_name: str) -> float:
     """Find a parameter in calibration XML, return 0.0 if not found."""
@@ -222,6 +229,48 @@ def quaternion_from_matrix(R: np.ndarray) -> np.ndarray:
     return q / np.linalg.norm(q)
 
 
+def create_person_mask_from_yolo(
+    image_path: str,
+    yolo_model: Any,
+    invert_mask: bool = False,
+) -> Image.Image:
+    """Create a binary mask for detected persons using YOLO.
+    
+    Args:
+        image_path: Path to the equirectangular image
+        yolo_model: YOLO model instance
+        invert_mask: If True, person=white(255) and background=black(0).
+                     If False, person=black(0) and background=white(255) for 3DGS training.
+    """
+    # Load image
+    image = Image.open(image_path)
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    
+    # Run YOLO detection
+    results = yolo_model(image, verbose=False)
+    
+    # Create binary mask
+    mask = np.zeros((image.height, image.width), dtype=np.uint8)
+    
+    # Process detections - class 0 is 'person' in COCO dataset
+    for result in results:
+        if result.masks is not None:
+            for i, cls in enumerate(result.boxes.cls):
+                if int(cls) == 0:  # person class
+                    mask_data = result.masks.data[i].cpu().numpy()
+                    # Resize mask to original image size
+                    mask_resized = cv2.resize(mask_data, (image.width, image.height))
+                    mask = np.maximum(mask, (mask_resized * 255).astype(np.uint8))
+    
+    # Default: person=white(255), background=black(0)
+    # Without invert_mask: person=black(0), background=white(255) for 3DGS training
+    if not invert_mask:
+        mask = 255 - mask
+    
+    return Image.fromarray(mask, mode="L")
+
+
 def crop_and_save_image(
     image_path: str,
     direction: str,
@@ -229,8 +278,10 @@ def crop_and_save_image(
     output_image_path: str,
     fov_deg: float = 90.0,
     flip_vertical: bool = True,
+    mask_image_path: Optional[str] = None,
+    output_mask_path: Optional[str] = None,
 ) -> Tuple[str, str, str, np.ndarray]:
-    """Crop equirectangular image and save. Returns (direction, output_name, output_path, metadata)."""
+    """Crop equirectangular image and save. Optionally crop and save mask from file path. Returns (direction, output_name, output_path, metadata)."""
     equirect_image = Image.open(image_path)
     if equirect_image.mode != "RGB":
         equirect_image = equirect_image.convert("RGB")
@@ -243,6 +294,18 @@ def crop_and_save_image(
         flip_vertical=flip_vertical,
     )
     cropped.save(output_image_path, quality=95)
+    
+    # Crop and save mask if provided
+    if mask_image_path is not None and output_mask_path is not None:
+        mask_image = Image.open(mask_image_path)
+        cropped_mask = crop_direction(
+            mask_image,
+            direction,
+            crop_size,
+            fov_deg=fov_deg,
+            flip_vertical=flip_vertical,
+        )
+        cropped_mask.save(output_mask_path)
     
     output_name = Path(output_image_path).name
     return (direction, output_name, output_image_path, np.array([]))
@@ -311,6 +374,9 @@ def convert_metashape_to_colmap(
     num_workers: int = 4,
     skip_component_transform_for_ply: bool = True,
     skip_bottom: bool = False,
+    generate_masks: bool = False,
+    yolo_model_path: str = "yolo11n-seg.pt",
+    invert_mask: bool = False,
 ) -> Dict[str, Any]:
     """Convert Metashape equirectangular data to COLMAP format."""
     if output_dir is None:
@@ -319,6 +385,21 @@ def convert_metashape_to_colmap(
     output_dir.mkdir(parents=True, exist_ok=True)
     images_output_dir = output_dir / "images"
     images_output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create masks directory if mask generation is enabled
+    masks_output_dir = None
+    tmp_masks_dir = None
+    yolo_model = None
+    if generate_masks:
+        if not HAS_YOLO:
+            raise ImportError("ultralytics is required for mask generation. Install with: pip install ultralytics")
+        masks_output_dir = output_dir / "masks"
+        masks_output_dir.mkdir(parents=True, exist_ok=True)
+        tmp_masks_dir = output_dir / "tmp"
+        tmp_masks_dir.mkdir(parents=True, exist_ok=True)
+        if verbose:
+            print(f"Loading YOLO model: {yolo_model_path}")
+        yolo_model = YOLO(yolo_model_path)
 
     if verbose:
         print(f"Parsing Metashape XML: {xml_path}")
@@ -367,6 +448,7 @@ def convert_metashape_to_colmap(
     # Collect all crop tasks for parallel processing
     crop_tasks = []  # List of (src_image_path, base_name, direction, R_c2w, t_c2w, camera_label)
     camera_metadata = []  # Store metadata for later processing
+    equirect_mask_paths = {}  # Cache for generated mask file paths {image_path: tmp_mask_path}
 
     for camera in cameras_xml.iter("camera"):
         if max_images is not None and processed_cameras >= max_images:
@@ -431,6 +513,19 @@ def convert_metashape_to_colmap(
             print(f"  R_c2w:\n{R_c2w}")
             print(f"  t_c2w: {t_c2w}")
 
+        # Generate person mask for this equirectangular image if requested
+        if generate_masks and str(src_image_path) not in equirect_mask_paths:
+            if verbose and len(equirect_mask_paths) == 0:
+                print("Generating person masks with YOLO...")
+            mask = create_person_mask_from_yolo(str(src_image_path), yolo_model, invert_mask)
+            # Save mask to temporary file
+            tmp_mask_name = f"{base_name}_mask.png"
+            tmp_mask_path = tmp_masks_dir / tmp_mask_name
+            mask.save(str(tmp_mask_path))
+            equirect_mask_paths[str(src_image_path)] = str(tmp_mask_path)
+            if verbose and len(equirect_mask_paths) % 10 == 0:
+                print(f"  Generated {len(equirect_mask_paths)} masks...")
+
         # Queue tasks for each direction
         for direction in directions:
             output_image_name = f"{base_name}_{direction}.jpg"
@@ -442,11 +537,38 @@ def convert_metashape_to_colmap(
 
     # Process crops in parallel
     if crop_tasks:
+        if verbose:
+            print(f"Cropping {len(crop_tasks)} images...")
+        
+        # Parallel processing for both RGB images and masks
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
-            futures = [
-                executor.submit(crop_and_save_image, *task)
-                for task in crop_tasks
-            ]
+            futures = []
+            for task in crop_tasks:
+                src_image_path, direction, crop_size_val, output_image_path, fov_deg_val, flip_vertical_val = task
+                
+                # Determine mask file path if masks are enabled
+                mask_file_path = None
+                output_mask_path = None
+                if generate_masks:
+                    mask_file_path = equirect_mask_paths.get(src_image_path)
+                    if mask_file_path is not None:
+                        output_image_name = Path(output_image_path).name
+                        output_mask_name = output_image_name.replace(".jpg", ".png")
+                        output_mask_path = str(masks_output_dir / output_mask_name)
+                
+                futures.append(
+                    executor.submit(
+                        crop_and_save_image,
+                        src_image_path,
+                        direction,
+                        crop_size_val,
+                        output_image_path,
+                        fov_deg_val,
+                        flip_vertical_val,
+                        mask_file_path,
+                        output_mask_path,
+                    )
+                )
             
             for idx, future in enumerate(futures):
                 try:
@@ -609,6 +731,9 @@ def main() -> int:
     parser.add_argument("--num-workers", type=int, default=4, help="Number of worker processes for parallel image cropping")
     parser.add_argument("--apply-component-transform-for-ply", action="store_true", default=False, help="Apply component transform for PLY (default: disabled, as PLY is usually pre-transformed in Metashape)")
     parser.add_argument("--skip-bottom", action="store_true", default=False, help="Skip bottom view (may contain self-reflections)")
+    parser.add_argument("--generate-masks", action="store_true", default=False, help="Generate person masks using YOLO and crop them alongside images")
+    parser.add_argument("--yolo-model", type=str, default="yolo11n-seg.pt", help="YOLO model path for mask generation (default: yolo11n-seg.pt)")
+    parser.add_argument("--invert-mask", action="store_true", default=False, help="Use person=white(255), background=black(0). Default: person=black(0), background=white(255) for 3DGS training")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
 
     args = parser.parse_args()
@@ -637,6 +762,9 @@ def main() -> int:
             skip_component_transform_for_ply=not args.apply_component_transform_for_ply,
             verbose=not args.quiet,
             skip_bottom=args.skip_bottom,
+            generate_masks=args.generate_masks,
+            yolo_model_path=args.yolo_model,
+            invert_mask=args.invert_mask,
         )
         if not args.quiet:
             print("\nConversion complete!")

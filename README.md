@@ -13,12 +13,13 @@ Refer to my X : https://x.com/naribubu/status/2015376645360849394
 - Optional PLY transform/export (needs Open3D)
 - Adjustable FoV and crop size; vertical flip for sampling equirect
 - Optional image-count cap for quick tests
+- Generate masks for human
 
 ## Requirements / 必要環境
 - Metashape Standard (https://www.agisoft.com/features/standard-edition/)
 - Python 3.9+
 - pip: `numpy`, `pillow`, `opencv-python`
-- Optional: `open3d` (for PLY → points3D)
+- Optional: `ultralytics`(for generate mask for human by YOLO), `open3d` (for PLY → points3D)
 
 ## Usage / 使い方
 ### SfM with Camera type as Spherical in Metashape
@@ -37,7 +38,7 @@ python metashape_360_to_colmap.py \
   --fov-deg 90 \
   --num-workers 4 \
   --max-images 50 \ # If you test quickly, specify small number. default 10000
-  --skip-bottom # Ignore bottom images (default false)
+  --generate-masks # mask for human if needed　
 ```
 
 ### Key options / 主なオプション
@@ -50,12 +51,17 @@ python metashape_360_to_colmap.py \
 - `--max-images`: Limit number of source equirects for quick tests (default 10000)
 - `--num-workers`: Number of process for image reframing (default 4)
 - `--skip-bottom`: Ignore bottom images for 3DGS training (default false)
+- `--generate-masks` : Generate masks for human
+- `--invert-mask` : Invert mask color from BLACK to WHITE 
 
 ### Outputs / 出力
 - `output/ images/`: Cropped images (4 per input frame)
+- `output/ masks/`: Mask images for human if the option (--generate-masks) is specified
+- `output/ tmp`: tmp folder for generating mask process. Able to delete after finishing
 - `output/ cameras.txt`
 - `output/ images.txt`
 - `output/ points3D.txt` (+ `points3D.ply` when PLY given)
+- 
 
 ## Notes / 補足
 - I confirmed that it worked with PostShot for 3DGS train.
