@@ -271,6 +271,38 @@ def create_person_mask_from_yolo(
     return Image.fromarray(mask, mode="L")
 
 
+def generate_mask_and_save(
+    image_path: str,
+    output_mask_path: str,
+    yolo_model_path: str,
+    invert_mask: bool = False,
+) -> Tuple[str, str]:
+    """Generate person mask and save to file (for parallel processing).
+    
+    Args:
+        image_path: Path to the equirectangular image
+        output_mask_path: Path to save the mask
+        yolo_model_path: Path to YOLO model
+        invert_mask: Whether to invert the mask
+    
+    Returns:
+        Tuple of (image_path, output_mask_path)
+    """
+    if not HAS_YOLO:
+        raise ImportError("ultralytics is required")
+    
+    # Load YOLO model in worker process
+    yolo_model = YOLO(yolo_model_path)
+    
+    # Generate mask
+    mask = create_person_mask_from_yolo(image_path, yolo_model, invert_mask)
+    
+    # Save mask
+    mask.save(output_mask_path)
+    
+    return (image_path, output_mask_path)
+
+
 def crop_and_save_image(
     image_path: str,
     direction: str,
@@ -449,6 +481,7 @@ def convert_metashape_to_colmap(
     crop_tasks = []  # List of (src_image_path, base_name, direction, R_c2w, t_c2w, camera_label)
     camera_metadata = []  # Store metadata for later processing
     equirect_mask_paths = {}  # Cache for generated mask file paths {image_path: tmp_mask_path}
+    equirect_images_to_process = []  # List of (src_image_path, base_name) for mask generation
 
     for camera in cameras_xml.iter("camera"):
         if max_images is not None and processed_cameras >= max_images:
@@ -513,18 +546,9 @@ def convert_metashape_to_colmap(
             print(f"  R_c2w:\n{R_c2w}")
             print(f"  t_c2w: {t_c2w}")
 
-        # Generate person mask for this equirectangular image if requested
+        # Collect equirectangular images for mask generation
         if generate_masks and str(src_image_path) not in equirect_mask_paths:
-            if verbose and len(equirect_mask_paths) == 0:
-                print("Generating person masks with YOLO...")
-            mask = create_person_mask_from_yolo(str(src_image_path), yolo_model, invert_mask)
-            # Save mask to temporary file
-            tmp_mask_name = f"{base_name}_mask.png"
-            tmp_mask_path = tmp_masks_dir / tmp_mask_name
-            mask.save(str(tmp_mask_path))
-            equirect_mask_paths[str(src_image_path)] = str(tmp_mask_path)
-            if verbose and len(equirect_mask_paths) % 10 == 0:
-                print(f"  Generated {len(equirect_mask_paths)} masks...")
+            equirect_images_to_process.append((str(src_image_path), base_name))
 
         # Queue tasks for each direction
         for direction in directions:
@@ -534,6 +558,44 @@ def convert_metashape_to_colmap(
             camera_metadata.append((base_name, direction, R_c2w, t_c2w))
 
         processed_cameras += 1
+
+    # Generate masks in parallel if requested
+    if generate_masks and equirect_images_to_process:
+        if verbose:
+            print(f"Generating {len(equirect_images_to_process)} person masks with YOLO (parallel)...")
+        
+        mask_generation_tasks = []
+        for src_image_path, base_name in equirect_images_to_process:
+            tmp_mask_name = f"{base_name}_mask.png"
+            tmp_mask_path = str(tmp_masks_dir / tmp_mask_name)
+            mask_generation_tasks.append((src_image_path, tmp_mask_path, yolo_model_path, invert_mask))
+        
+        with ProcessPoolExecutor(max_workers=num_workers) as executor:
+            futures = []
+            for task in mask_generation_tasks:
+                futures.append(
+                    executor.submit(
+                        generate_mask_and_save,
+                        task[0],
+                        task[1],
+                        task[2],
+                        task[3],
+                    )
+                )
+            
+            for idx, future in enumerate(futures):
+                try:
+                    image_path, mask_path = future.result()
+                    equirect_mask_paths[image_path] = mask_path
+                    if verbose and (idx + 1) % 10 == 0:
+                        print(f"  Generated {idx + 1}/{len(futures)} masks...")
+                except Exception as exc:
+                    if verbose:
+                        print(f"  Error generating mask {idx}: {exc}")
+                    continue
+        
+        if verbose:
+            print(f"  Completed {len(equirect_mask_paths)} masks")
 
     # Process crops in parallel
     if crop_tasks:
