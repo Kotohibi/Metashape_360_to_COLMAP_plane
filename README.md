@@ -5,6 +5,8 @@ English | 日本語
 ## Overview / 概要
 Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP text format, while generating rectilinear crops (top/front/right/back/left/bottom) from each 360° frame. Optional PLY is converted to points3D.txt (via Open3D).
 
+Refer to my X : https://x.com/naribubu/status/2015376645360849394
+
 ## Features / 特長
 - Equirectangular → Cubemap, 6 rectilinear 90° crops per frame (top/front/right/back/left/bottom), multi-process available
 - Writes COLMAP `cameras.txt`, `images.txt`, `points3D.txt`
@@ -24,7 +26,7 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
 ### Export Cameras as XML and Point cloud as PLY files from Metashape
 - [File] -> [Export Cameras...] -> select xml type
 - [File] -> [Export Point Cloud...] -> select ply type
-### Python CLI
+### Python CLI example
 ```bash
 python metashape_360_to_colmap.py \
   --images /path/to/equirect_frames \
