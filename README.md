@@ -5,7 +5,13 @@ English | 日本語
 ## Overview / 概要
 Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP text format, while generating rectilinear crops (top/front/right/back/left/bottom) from each 360° frame. Optional PLY is converted to points3D.txt (via Open3D).
 
-Refer to my X : https://x.com/naribubu/status/2015376645360849394
+Refer to my X
+- https://x.com/naribubu/status/2015376645360849394
+- https://x.com/naribubu/status/2016517770876440901
+
+Refer to other URL
+- https://lilea.net/lab/equirectangular-3dgs-with-licht-feld-studio/
+- https://note.com/grand_loris6426/n/ne67d281505d5
 
 ## Features / 特長
 - Equirectangular → Cubemap, 6 rectilinear 90° crops per frame (top/front/right/back/left/bottom), multi-process available
