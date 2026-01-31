@@ -62,24 +62,20 @@ def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
     if sensors is None:
         raise ValueError("No sensors found in Metashape XML")
 
+    # Accept sensors with calibration OR spherical type (which doesn't need calibration for 6-direction cropping)
     calibrated_sensors = [
         sensor for sensor in sensors.iter("sensor")
-        if sensor.get("type") == "spherical" or sensor.find("calibration")
+        if sensor.find("calibration") is not None or sensor.get("type") == "spherical"
     ]
     if not calibrated_sensors:
         raise ValueError("No calibrated sensor found in Metashape XML")
 
-    sensor_types = [s.get("type") for s in calibrated_sensors]
-    if sensor_types.count(sensor_types[0]) != len(sensor_types):
-        raise ValueError("All sensors must share the same type")
-
-    sensor_type = sensor_types[0]
-    if sensor_type != "spherical":
-        raise ValueError(f"Expected equirectangular (spherical) sensors, got {sensor_type}")
-
-    sensor_dict: Dict[str, Dict[str, float]] = {}
+    sensor_dict: Dict[str, Dict[str, Any]] = {}
     for sensor in calibrated_sensors:
-        s: Dict[str, float] = {}
+        s: Dict[str, Any] = {}
+        sensor_type = sensor.get("type")
+        s["type"] = sensor_type
+        
         resolution = sensor.find("resolution")
         if resolution is None:
             raise ValueError("Resolution not found in Metashape XML")
@@ -89,11 +85,21 @@ def parse_metashape_xml(xml_path: Path) -> Dict[str, Any]:
 
         calib = sensor.find("calibration")
         if calib is None:
-            s["fl_x"] = s["w"] / 2.0
-            s["fl_y"] = s["h"]
-            s["cx"] = s["w"] / 2.0
-            s["cy"] = s["h"] / 2.0
+            s["calibration_type"] = None
+            if sensor_type == "spherical":
+                s["fl_x"] = s["w"] / 2.0
+                s["fl_y"] = s["h"]
+                s["cx"] = s["w"] / 2.0
+                s["cy"] = s["h"] / 2.0
+            else:
+                # Default pinhole approximation
+                s["fl_x"] = s["fl_y"] = s["w"] * 0.8
+                s["cx"] = s["w"] / 2.0
+                s["cy"] = s["h"] / 2.0
         else:
+            # Get calibration type (e.g., "equidistant_fisheye", "frame", etc.)
+            s["calibration_type"] = calib.get("type")
+            
             f = calib.find("f")
             if f is None or f.text is None:
                 raise ValueError("Focal length not found in Metashape XML")
@@ -343,6 +349,144 @@ def crop_and_save_image(
     return (direction, output_name, output_image_path, np.array([]))
 
 
+def undistort_image(
+    image: Image.Image,
+    sensor_params: Dict[str, Any],
+) -> Tuple[Image.Image, Dict[str, float]]:
+    """Undistort image using sensor calibration parameters.
+    
+    Supports:
+    - equidistant_fisheye: Uses cv2.fisheye module
+    - frame/other: Uses standard cv2.undistort (Brown-Conrady model)
+    
+    Returns:
+        Tuple of (undistorted_image, new_camera_params)
+        new_camera_params contains: {"fx", "fy", "cx", "cy", "width", "height"}
+    """
+    img_array = np.array(image)
+    h, w = img_array.shape[:2]
+    
+    # Metashape camera matrix
+    K = np.array([
+        [sensor_params["fl_x"], 0, sensor_params["cx"]],
+        [0, sensor_params["fl_y"], sensor_params["cy"]],
+        [0, 0, 1]
+    ], dtype=np.float64)
+    
+    calibration_type = sensor_params.get("calibration_type", "frame")
+    
+    if calibration_type == "equidistant_fisheye":
+        # Fisheye (equidistant) model uses cv2.fisheye module
+        # Distortion coefficients for fisheye: (k1, k2, k3, k4)
+        dist_coeffs = np.array([
+            sensor_params.get("k1", 0.0),
+            sensor_params.get("k2", 0.0),
+            sensor_params.get("k3", 0.0),
+            sensor_params.get("k4", 0.0),
+        ], dtype=np.float64)
+        
+        # Estimate new camera matrix for fisheye
+        # balance=0 means crop all invalid pixels, balance=1 keeps all pixels
+        new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+            K, dist_coeffs, (w, h), np.eye(3), balance=0.0, new_size=(w, h)
+        )
+        
+        # Create undistort maps for fisheye
+        map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+            K, dist_coeffs, np.eye(3), new_K, (w, h), cv2.CV_16SC2
+        )
+        
+        # Remap image
+        undistorted = cv2.remap(
+            img_array, map1, map2,
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT
+        )
+        
+        new_params = {
+            "fx": new_K[0, 0],
+            "fy": new_K[1, 1],
+            "cx": new_K[0, 2],
+            "cy": new_K[1, 2],
+            "width": w,
+            "height": h,
+        }
+    elif calibration_type == "frame" or calibration_type is None:
+        # Standard Brown-Conrady model for frame cameras
+        # Distortion coefficients: (k1, k2, p1, p2, k3)
+        dist_coeffs = np.array([
+            sensor_params.get("k1", 0.0),
+            sensor_params.get("k2", 0.0),
+            sensor_params.get("p1", 0.0),
+            sensor_params.get("p2", 0.0),
+            sensor_params.get("k3", 0.0),
+        ], dtype=np.float64)
+        
+        # Get optimal new camera matrix
+        new_K, roi = cv2.getOptimalNewCameraMatrix(K, dist_coeffs, (w, h), alpha=0, newImgSize=(w, h))
+        
+        # Undistort image
+        undistorted = cv2.undistort(img_array, K, dist_coeffs, None, new_K)
+        
+        # Optionally crop to ROI to remove black borders
+        x, y, w_roi, h_roi = roi
+        if w_roi > 0 and h_roi > 0:
+            undistorted = undistorted[y:y+h_roi, x:x+w_roi]
+            # Adjust principal point for crop
+            new_params = {
+                "fx": new_K[0, 0],
+                "fy": new_K[1, 1],
+                "cx": new_K[0, 2] - x,
+                "cy": new_K[1, 2] - y,
+                "width": w_roi,
+                "height": h_roi,
+            }
+        else:
+            new_params = {
+                "fx": new_K[0, 0],
+                "fy": new_K[1, 1],
+                "cx": new_K[0, 2],
+                "cy": new_K[1, 2],
+                "width": w,
+                "height": h,
+            }
+    else:
+        # Unknown calibration type - try standard undistort as fallback
+        dist_coeffs = np.array([
+            sensor_params.get("k1", 0.0),
+            sensor_params.get("k2", 0.0),
+            sensor_params.get("p1", 0.0),
+            sensor_params.get("p2", 0.0),
+            sensor_params.get("k3", 0.0),
+        ], dtype=np.float64)
+        
+        new_K, roi = cv2.getOptimalNewCameraMatrix(K, dist_coeffs, (w, h), alpha=0, newImgSize=(w, h))
+        undistorted = cv2.undistort(img_array, K, dist_coeffs, None, new_K)
+        
+        x, y, w_roi, h_roi = roi
+        if w_roi > 0 and h_roi > 0:
+            undistorted = undistorted[y:y+h_roi, x:x+w_roi]
+            new_params = {
+                "fx": new_K[0, 0],
+                "fy": new_K[1, 1],
+                "cx": new_K[0, 2] - x,
+                "cy": new_K[1, 2] - y,
+                "width": w_roi,
+                "height": h_roi,
+            }
+        else:
+            new_params = {
+                "fx": new_K[0, 0],
+                "fy": new_K[1, 1],
+                "cx": new_K[0, 2],
+                "cy": new_K[1, 2],
+                "width": w,
+                "height": h,
+            }
+    
+    return Image.fromarray(undistorted), new_params
+
+
 def crop_direction(
     equirect_image: Image.Image,
     direction: str,
@@ -456,17 +600,22 @@ def convert_metashape_to_colmap(
             for comp_id, comp_mat in component_dict.items():
                 print(f"  Component '{comp_id}': {comp_mat}")
 
-    camera_id = 1  # single shared intrinsic entry
+    # Camera ID management for multiple sensor types
+    camera_id_spherical = 1  # PINHOLE camera for spherical crops
     fx = fy = (crop_size / 2.0) / np.tan(np.deg2rad(fov_deg) / 2.0)
     cx = cy = crop_size / 2.0
-    cameras_colmap = {
-        camera_id: {
+    cameras_colmap: Dict[int, Dict[str, Any]] = {
+        camera_id_spherical: {
             "width": crop_size,
             "height": crop_size,
             "model": "PINHOLE",
             "params": [fx, fy, cx, cy],
         }
     }
+    
+    # Track non-spherical sensor to camera_id mapping
+    sensor_to_camera_id: Dict[str, int] = {}
+    next_camera_id = camera_id_spherical + 1
 
     images_colmap: Dict[int, Dict[str, Any]] = {}
     image_id = 1
@@ -477,11 +626,14 @@ def convert_metashape_to_colmap(
     if skip_bottom:
         directions = ["top", "front", "right", "back", "left"]
 
-    # Collect all crop tasks for parallel processing
+    # Collect all crop tasks for parallel processing (for spherical cameras)
     crop_tasks = []  # List of (src_image_path, base_name, direction, R_c2w, t_c2w, camera_label)
     camera_metadata = []  # Store metadata for later processing
     equirect_mask_paths = {}  # Cache for generated mask file paths {image_path: tmp_mask_path}
     equirect_images_to_process = []  # List of (src_image_path, base_name) for mask generation
+    
+    # Non-spherical camera tasks (to be processed separately)
+    non_spherical_tasks = []  # List of (src_image_path, sensor_id, R_c2w, t_c2w, camera_label)
 
     for camera in cameras_xml.iter("camera"):
         if max_images is not None and processed_cameras >= max_images:
@@ -505,6 +657,9 @@ def convert_metashape_to_colmap(
                 print(f"  Skipping {camera_label}: no sensor calibration")
             num_skipped += 1
             continue
+        
+        sensor_params = sensor_dict[sensor_id]
+        sensor_type = sensor_params.get("type", "frame")  # Default to frame if not specified
 
         transform_elem = camera.find("transform")
         if transform_elem is None or transform_elem.text is None:
@@ -541,21 +696,27 @@ def convert_metashape_to_colmap(
 
         # Debug output for first valid camera
         if verbose and processed_cameras == 0:
-            print(f"First valid camera '{camera_label}':")
+            print(f"First valid camera '{camera_label}' (type: {sensor_type}):")
             print(f"  Raw transform (after component): \n{transform}")
             print(f"  R_c2w:\n{R_c2w}")
             print(f"  t_c2w: {t_c2w}")
 
-        # Collect equirectangular images for mask generation
-        if generate_masks and str(src_image_path) not in equirect_mask_paths:
-            equirect_images_to_process.append((str(src_image_path), base_name))
+        # Process based on sensor type
+        if sensor_type == "spherical":
+            # Collect equirectangular images for mask generation
+            if generate_masks and str(src_image_path) not in equirect_mask_paths:
+                equirect_images_to_process.append((str(src_image_path), base_name))
 
-        # Queue tasks for each direction
-        for direction in directions:
-            output_image_name = f"{base_name}_{direction}.jpg"
-            output_image_path = str(images_output_dir / output_image_name)
-            crop_tasks.append((str(src_image_path), direction, crop_size, output_image_path, fov_deg, flip_vertical))
-            camera_metadata.append((base_name, direction, R_c2w, t_c2w))
+            # Queue tasks for each direction
+            for direction in directions:
+                output_image_name = f"{base_name}_{direction}.jpg"
+                output_image_path = str(images_output_dir / output_image_name)
+                crop_tasks.append((str(src_image_path), direction, crop_size, output_image_path, fov_deg, flip_vertical))
+                camera_metadata.append((base_name, direction, R_c2w, t_c2w, camera_id_spherical))
+        else:
+            # Non-spherical camera (fisheye, frame, etc.)
+            # Store for later processing (undistort and add to images.txt)
+            non_spherical_tasks.append((str(src_image_path), sensor_id, R_c2w, t_c2w, camera_label))
 
         processed_cameras += 1
 
@@ -640,8 +801,8 @@ def convert_metashape_to_colmap(
                         print(f"  Error processing crop {idx}: {exc}")
                     continue
 
-    # Build images_colmap from results
-    for idx, (base_name, direction, R_c2w, t_c2w) in enumerate(camera_metadata):
+    # Build images_colmap from spherical crop results
+    for idx, (base_name, direction, R_c2w, t_c2w, cam_id) in enumerate(camera_metadata):
         output_image_name = f"{base_name}_{direction}.jpg"
         
         R_dir = get_direction_rotation_matrix(direction)
@@ -654,14 +815,106 @@ def convert_metashape_to_colmap(
         images_colmap[image_id] = {
             "quat": q,  # [x, y, z, w]
             "tvec": t_w2c,
-            "camera_id": camera_id,
+            "camera_id": cam_id,
             "name": output_image_name,
         }
         image_id += 1
         processed_images += 1
+    
+    # Process non-spherical cameras
+    if non_spherical_tasks:
+        if verbose:
+            print(f"Processing {len(non_spherical_tasks)} non-spherical images (undistorting)...")
+        
+        for src_image_path, sensor_id, R_c2w, t_c2w, camera_label in non_spherical_tasks:
+            sensor_params = sensor_dict[sensor_id]
+            
+            # Check if we already have a camera_id for this sensor
+            if sensor_id not in sensor_to_camera_id:
+                # Load and undistort the first image to get output dimensions
+                try:
+                    img = Image.open(src_image_path)
+                    undistorted_img, new_params = undistort_image(img, sensor_params)
+                    
+                    # Register new PINHOLE camera in cameras_colmap
+                    sensor_to_camera_id[sensor_id] = next_camera_id
+                    cameras_colmap[next_camera_id] = {
+                        "width": new_params["width"],
+                        "height": new_params["height"],
+                        "model": "PINHOLE",
+                        "params": [
+                            new_params["fx"],
+                            new_params["fy"],
+                            new_params["cx"],
+                            new_params["cy"],
+                        ],
+                    }
+                    
+                    if verbose:
+                        print(f"  Registered camera {next_camera_id} for sensor {sensor_id} ({sensor_params.get('type', 'frame')}): "
+                              f"{new_params['width']}x{new_params['height']}, "
+                              f"fx={new_params['fx']:.2f}, fy={new_params['fy']:.2f}")
+                    
+                    next_camera_id += 1
+                    
+                    # Save undistorted image
+                    output_image_name = f"{Path(camera_label).stem}.jpg"
+                    output_image_path = images_output_dir / output_image_name
+                    undistorted_img.save(output_image_path, quality=95)
+                    
+                    # Add to images_colmap
+                    R_w2c = R_c2w.T
+                    t_w2c = -R_w2c @ t_c2w
+                    q = quaternion_from_matrix(R_w2c)
+                    
+                    images_colmap[image_id] = {
+                        "quat": q,
+                        "tvec": t_w2c,
+                        "camera_id": sensor_to_camera_id[sensor_id],
+                        "name": output_image_name,
+                    }
+                    image_id += 1
+                    processed_images += 1
+                    
+                except Exception as exc:
+                    if verbose:
+                        print(f"  Error processing {camera_label}: {exc}")
+                    num_skipped += 1
+                    continue
+            else:
+                # Sensor already registered, just undistort and save
+                try:
+                    img = Image.open(src_image_path)
+                    undistorted_img, _ = undistort_image(img, sensor_params)
+                    
+                    output_image_name = f"{Path(camera_label).stem}.jpg"
+                    output_image_path = images_output_dir / output_image_name
+                    undistorted_img.save(output_image_path, quality=95)
+                    
+                    # Add to images_colmap
+                    R_w2c = R_c2w.T
+                    t_w2c = -R_w2c @ t_c2w
+                    q = quaternion_from_matrix(R_w2c)
+                    
+                    images_colmap[image_id] = {
+                        "quat": q,
+                        "tvec": t_w2c,
+                        "camera_id": sensor_to_camera_id[sensor_id],
+                        "name": output_image_name,
+                    }
+                    image_id += 1
+                    processed_images += 1
+                    
+                except Exception as exc:
+                    if verbose:
+                        print(f"  Error processing {camera_label}: {exc}")
+                    num_skipped += 1
+                    continue
 
     if verbose:
-        print(f"Processed {processed_images} cropped images")
+        print(f"Processed {processed_images} total images")
+        print(f"  - Spherical crops: {len(camera_metadata)}")
+        print(f"  - Non-spherical: {len(non_spherical_tasks)}")
         if max_images is not None:
             print(f"  (Stopped after {processed_cameras} source images due to --max-images)")
         if num_skipped > 0:
