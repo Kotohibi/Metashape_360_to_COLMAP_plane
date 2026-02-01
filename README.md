@@ -8,10 +8,12 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
 Refer to my X
 - https://x.com/naribubu/status/2015376645360849394
 - https://x.com/naribubu/status/2016517770876440901
+- https://x.com/naribubu/status/2017883648075391214 (As for --yaw-offset otpion)
 
 Refer to other URL
 - https://lilea.net/lab/equirectangular-3dgs-with-licht-feld-studio/
 - https://note.com/grand_loris6426/n/ne67d281505d5
+- https://x.com/migero_usausagi/status/2017850407884632298 (As for --yaw-offset otpion)
 
 ## Features / 特長
 - Equirectangular → Cubemap, 6 rectilinear 90° crops per frame (top/front/right/back/left/bottom), multi-process available
