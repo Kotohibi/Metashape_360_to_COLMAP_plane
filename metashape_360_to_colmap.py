@@ -312,6 +312,7 @@ def crop_and_save_image(
     flip_vertical: bool = True,
     mask_image_path: Optional[str] = None,
     output_mask_path: Optional[str] = None,
+    yaw_offset: float = 0.0,
 ) -> Tuple[str, str, str, np.ndarray]:
     """Crop equirectangular image and save. Optionally crop and save mask from file path. Returns (direction, output_name, output_path, metadata)."""
     equirect_image = Image.open(image_path)
@@ -324,6 +325,7 @@ def crop_and_save_image(
         crop_size,
         fov_deg=fov_deg,
         flip_vertical=flip_vertical,
+        yaw_offset=yaw_offset,
     )
     cropped.save(output_image_path, quality=95)
     
@@ -336,6 +338,7 @@ def crop_and_save_image(
             crop_size,
             fov_deg=fov_deg,
             flip_vertical=flip_vertical,
+            yaw_offset=yaw_offset,
         )
         cropped_mask.save(output_mask_path)
     
@@ -349,10 +352,15 @@ def crop_direction(
     crop_size: int,
     fov_deg: float = 90.0,
     flip_vertical: bool = True,
+    yaw_offset: float = 0.0,
 ) -> Image.Image:
     """Rectilinear 90° crop from equirectangular using cv2.remap (cube map layout).
     
     Extracts 6 directions (top/front/right/back/left/bottom) like a cube map unfolding.
+    
+    Args:
+        yaw_offset: Additional yaw rotation in degrees to apply to the crop direction.
+                   Use this to rotate the cubemap extraction angle per frame.
     """
     # Prepare output grid (pixel centers).
     w_out = h_out = crop_size
@@ -365,8 +373,21 @@ def crop_direction(
     dirs = np.stack([x, y, z], axis=-1)
     dirs /= np.linalg.norm(dirs, axis=-1, keepdims=True)
 
-    # Apply rotation matrix for this direction (both yaw and pitch).
+    # Apply rotation matrix for this direction (both yaw and pitch) plus yaw offset.
     R = get_direction_rotation_matrix(direction).astype(np.float32)
+    
+    # Apply additional yaw offset rotation
+    if yaw_offset != 0.0:
+        yaw_rad = np.radians(yaw_offset)
+        cos_y = np.cos(yaw_rad)
+        sin_y = np.sin(yaw_rad)
+        R_yaw_offset = np.array([
+            [cos_y, 0, sin_y],
+            [0, 1, 0],
+            [-sin_y, 0, cos_y],
+        ], dtype=np.float32)
+        R = R_yaw_offset @ R
+    
     dirs = dirs @ R.T
 
     # Convert direction vectors to equirectangular UV.
@@ -409,8 +430,15 @@ def convert_metashape_to_colmap(
     generate_masks: bool = False,
     yolo_model_path: str = "yolo11n-seg.pt",
     invert_mask: bool = False,
+    yaw_offset_per_frame: float = 0.0,
 ) -> Dict[str, Any]:
-    """Convert Metashape equirectangular data to COLMAP format."""
+    """Convert Metashape equirectangular data to COLMAP format.
+    
+    Args:
+        yaw_offset_per_frame: Yaw rotation offset (degrees) to add per frame.
+                              E.g., 45.0 means frame 0 has 0° offset, frame 1 has 45°, etc.
+                              This can improve 3DGS training stability by diversifying view angles.
+    """
     if output_dir is None:
         output_dir = xml_path.parent
 
@@ -482,6 +510,7 @@ def convert_metashape_to_colmap(
     camera_metadata = []  # Store metadata for later processing
     equirect_mask_paths = {}  # Cache for generated mask file paths {image_path: tmp_mask_path}
     equirect_images_to_process = []  # List of (src_image_path, base_name) for mask generation
+    frame_index = 0  # Track frame index for yaw offset calculation
 
     for camera in cameras_xml.iter("camera"):
         if max_images is not None and processed_cameras >= max_images:
@@ -550,14 +579,18 @@ def convert_metashape_to_colmap(
         if generate_masks and str(src_image_path) not in equirect_mask_paths:
             equirect_images_to_process.append((str(src_image_path), base_name))
 
+        # Calculate yaw offset for this frame
+        current_yaw_offset = frame_index * yaw_offset_per_frame
+
         # Queue tasks for each direction
         for direction in directions:
             output_image_name = f"{base_name}_{direction}.jpg"
             output_image_path = str(images_output_dir / output_image_name)
-            crop_tasks.append((str(src_image_path), direction, crop_size, output_image_path, fov_deg, flip_vertical))
-            camera_metadata.append((base_name, direction, R_c2w, t_c2w))
+            crop_tasks.append((str(src_image_path), direction, crop_size, output_image_path, fov_deg, flip_vertical, current_yaw_offset))
+            camera_metadata.append((base_name, direction, R_c2w, t_c2w, current_yaw_offset))
 
         processed_cameras += 1
+        frame_index += 1
 
     # Generate masks in parallel if requested
     if generate_masks and equirect_images_to_process:
@@ -606,7 +639,7 @@ def convert_metashape_to_colmap(
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = []
             for task in crop_tasks:
-                src_image_path, direction, crop_size_val, output_image_path, fov_deg_val, flip_vertical_val = task
+                src_image_path, direction, crop_size_val, output_image_path, fov_deg_val, flip_vertical_val, yaw_offset_val = task
                 
                 # Determine mask file path if masks are enabled
                 mask_file_path = None
@@ -629,6 +662,7 @@ def convert_metashape_to_colmap(
                         flip_vertical_val,
                         mask_file_path,
                         output_mask_path,
+                        yaw_offset_val,
                     )
                 )
             
@@ -641,10 +675,23 @@ def convert_metashape_to_colmap(
                     continue
 
     # Build images_colmap from results
-    for idx, (base_name, direction, R_c2w, t_c2w) in enumerate(camera_metadata):
+    for idx, (base_name, direction, R_c2w, t_c2w, yaw_offset) in enumerate(camera_metadata):
         output_image_name = f"{base_name}_{direction}.jpg"
         
         R_dir = get_direction_rotation_matrix(direction)
+        
+        # Apply yaw offset rotation to match the cropped image
+        if yaw_offset != 0.0:
+            yaw_rad = np.radians(yaw_offset)
+            cos_y = np.cos(yaw_rad)
+            sin_y = np.sin(yaw_rad)
+            R_yaw_offset = np.array([
+                [cos_y, 0, sin_y],
+                [0, 1, 0],
+                [-sin_y, 0, cos_y],
+            ])
+            R_dir = R_yaw_offset @ R_dir
+        
         R_c2w_dir = R_c2w @ R_dir  # align extrinsics with the rotated crop
 
         R_w2c = R_c2w_dir.T
@@ -796,6 +843,7 @@ def main() -> int:
     parser.add_argument("--generate-masks", action="store_true", default=False, help="Generate person masks using YOLO and crop them alongside images")
     parser.add_argument("--yolo-model", type=str, default="yolo11n-seg.pt", help="YOLO model path for mask generation (default: yolo11n-seg.pt)")
     parser.add_argument("--invert-mask", action="store_true", default=False, help="Use person=white(255), background=black(0). Default: person=black(0), background=white(255) for 3DGS training")
+    parser.add_argument("--yaw-offset", type=float, default=0.0, help="Yaw rotation offset (degrees) to add per frame. E.g., 45.0 rotates cubemap extraction by 45° for each successive frame. This can improve 3DGS training stability by diversifying view angles.")
     parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
 
     args = parser.parse_args()
@@ -827,6 +875,7 @@ def main() -> int:
             generate_masks=args.generate_masks,
             yolo_model_path=args.yolo_model,
             invert_mask=args.invert_mask,
+            yaw_offset_per_frame=args.yaw_offset,
         )
         if not args.quiet:
             print("\nConversion complete!")

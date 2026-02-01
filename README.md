@@ -44,6 +44,7 @@ python metashape_360_to_colmap.py \
   --fov-deg 90 \
   --num-workers 4 \
   --max-images 50 \ # If you test quickly, specify small number. default 10000
+  --yaw-offset 30 \ # If needed, rotate cubemap for each extraction to be more stable for 3DGS. default 0
   --generate-masks # mask for human if needed　
 ```
 
@@ -58,7 +59,8 @@ python metashape_360_to_colmap.py \
 - `--num-workers`: Number of process for image reframing (default 4)
 - `--skip-bottom`: Ignore bottom images for 3DGS training (default false)
 - `--generate-masks` : Generate masks for human
-- `--invert-mask` : Invert mask color from BLACK to WHITE 
+- `--invert-mask` : Invert mask color from BLACK to WHITE
+- `--yaw-offset`: Yaw rotation offset (degrees) per frame. E.g., `45.0` rotates cubemap extraction by 45° for each successive frame. This can improve 3DGS training stability by diversifying view angles. (default 0.0) 
 
 ### Outputs / 出力
 - `output/ images/`: Cropped images (4 per input frame)
