@@ -4,6 +4,10 @@
 # Command-line arguments take precedence over these settings
 
 # Required parameters (if not specified on command line)
+# For paths with spaces, use quotes (single or double)
+# Examples:
+#   images="D:\My Documents\equirect frames"
+#   xml='C:/Program Files/project/cameras.xml'
 images=./equirect/
 xml=./cameras.xml
 ply=./dense.ply
