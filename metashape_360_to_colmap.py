@@ -868,6 +868,12 @@ def load_config(config_path: Path = Path("config.txt")) -> Dict[str, Any]:
         yaw-offset=0.0
         range-images=10-50
         quiet=False
+    
+    Paths with spaces should be enclosed in quotes (single or double):
+        images="D:\\My Documents\\equirect frames"
+        xml='C:/Program Files/project/cameras.xml'
+    
+    Quotes are automatically removed during parsing.
     """
     config = {}
     if not config_path.exists():
@@ -889,6 +895,12 @@ def load_config(config_path: Path = Path("config.txt")) -> Dict[str, Any]:
                 key, value = line.split("=", 1)
                 key = key.strip()
                 value = value.strip()
+                
+                # Remove surrounding quotes if present (both single and double quotes)
+                # This allows paths with spaces to be properly handled
+                if value and len(value) >= 2:
+                    if (value[0] == '"' and value[-1] == '"') or (value[0] == "'" and value[-1] == "'"):
+                        value = value[1:-1]
                 
                 # Convert value to appropriate type
                 if value.lower() in ("true", "yes", "1"):

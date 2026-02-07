@@ -68,6 +68,13 @@ yaw-offset=30
 generate-masks=True
 ```
 
+**For paths with spaces (Windows users):** Enclose paths in quotes (single or double):
+```
+images="D:\My Documents\equirect frames"
+xml="C:\Program Files\project\cameras.xml"
+output='D:\Output Folder\colmap'
+```
+
 **Priority:** Command-line arguments > config.txt > default values
 
 If you specify an option on the command line, it will override the value in config.txt. See [config.txt.example](config.txt.example) for all available options.
