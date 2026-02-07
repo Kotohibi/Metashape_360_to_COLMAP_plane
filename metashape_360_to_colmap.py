@@ -20,6 +20,7 @@ Dependencies:
 """
 
 import argparse
+import configparser
 import xml.etree.ElementTree as ET
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -233,19 +234,26 @@ def create_person_mask_from_yolo(
     image_path: str,
     yolo_model: Any,
     invert_mask: bool = False,
+    class_ids: Optional[list] = None,
 ) -> Image.Image:
-    """Create a binary mask for detected persons using YOLO.
+    """Create a binary mask for detected objects using YOLO.
     
     Args:
         image_path: Path to the equirectangular image
         yolo_model: YOLO model instance
-        invert_mask: If True, person=white(255) and background=black(0).
-                     If False, person=black(0) and background=white(255) for 3DGS training.
+        invert_mask: If True, object=white(255) and background=black(0).
+                     If False, object=black(0) and background=white(255) for 3DGS training.
+        class_ids: List of YOLO class IDs to include in mask. If None, uses [0] (person only).
+                   Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck, etc.
     """
     # Load image
     image = Image.open(image_path)
     if image.mode != "RGB":
         image = image.convert("RGB")
+    
+    # Default to person class if not specified
+    if class_ids is None:
+        class_ids = [0]
     
     # Run YOLO detection
     results = yolo_model(image, verbose=False)
@@ -253,11 +261,11 @@ def create_person_mask_from_yolo(
     # Create binary mask
     mask = np.zeros((image.height, image.width), dtype=np.uint8)
     
-    # Process detections - class 0 is 'person' in COCO dataset
+    # Process detections for specified classes
     for result in results:
         if result.masks is not None:
             for i, cls in enumerate(result.boxes.cls):
-                if int(cls) == 0:  # person class
+                if int(cls) in class_ids:
                     mask_data = result.masks.data[i].cpu().numpy()
                     # Resize mask to original image size
                     mask_resized = cv2.resize(mask_data, (image.width, image.height))
@@ -276,14 +284,16 @@ def generate_mask_and_save(
     output_mask_path: str,
     yolo_model_path: str,
     invert_mask: bool = False,
+    class_ids: Optional[list] = None,
 ) -> Tuple[str, str]:
-    """Generate person mask and save to file (for parallel processing).
+    """Generate object mask and save to file (for parallel processing).
     
     Args:
         image_path: Path to the equirectangular image
         output_mask_path: Path to save the mask
         yolo_model_path: Path to YOLO model
         invert_mask: Whether to invert the mask
+        class_ids: List of YOLO class IDs to include in mask
     
     Returns:
         Tuple of (image_path, output_mask_path)
@@ -295,7 +305,7 @@ def generate_mask_and_save(
     yolo_model = YOLO(yolo_model_path)
     
     # Generate mask
-    mask = create_person_mask_from_yolo(image_path, yolo_model, invert_mask)
+    mask = create_person_mask_from_yolo(image_path, yolo_model, invert_mask, class_ids)
     
     # Save mask
     mask.save(output_mask_path)
@@ -431,6 +441,8 @@ def convert_metashape_to_colmap(
     yolo_model_path: str = "yolo11n-seg.pt",
     invert_mask: bool = False,
     yaw_offset_per_frame: float = 0.0,
+    range_images: Optional[Tuple[int, int]] = None,
+    yolo_classes: Optional[list] = None,
 ) -> Dict[str, Any]:
     """Convert Metashape equirectangular data to COLMAP format.
     
@@ -438,6 +450,11 @@ def convert_metashape_to_colmap(
         yaw_offset_per_frame: Yaw rotation offset (degrees) to add per frame.
                               E.g., 45.0 means frame 0 has 0° offset, frame 1 has 45°, etc.
                               This can improve 3DGS training stability by diversifying view angles.
+        range_images: Tuple of (start_index, end_index) to process only a range of images.
+                      E.g., (10, 50) processes images from index 10 to 50 (inclusive).
+                      If None, processes all images (up to max_images if specified).
+        yolo_classes: List of YOLO class IDs to include in mask. If None, uses [0] (person only).
+                      Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck, etc.
     """
     if output_dir is None:
         output_dir = xml_path.parent
@@ -511,10 +528,24 @@ def convert_metashape_to_colmap(
     equirect_mask_paths = {}  # Cache for generated mask file paths {image_path: tmp_mask_path}
     equirect_images_to_process = []  # List of (src_image_path, base_name) for mask generation
     frame_index = 0  # Track frame index for yaw offset calculation
+    camera_index = 0  # Track camera index for range filtering
+
+    # Determine range bounds
+    range_start = range_images[0] if range_images else 0
+    range_end = range_images[1] if range_images else None
 
     for camera in cameras_xml.iter("camera"):
+        # Check if we've reached the max_images limit
         if max_images is not None and processed_cameras >= max_images:
             break
+        
+        # Check if we're within the specified range
+        if camera_index < range_start:
+            camera_index += 1
+            continue
+        if range_end is not None and camera_index > range_end:
+            break
+        
         camera_label = camera.get("label")
         if not camera_label:
             continue
@@ -591,6 +622,7 @@ def convert_metashape_to_colmap(
 
         processed_cameras += 1
         frame_index += 1
+        camera_index += 1
 
     # Generate masks in parallel if requested
     if generate_masks and equirect_images_to_process:
@@ -601,7 +633,7 @@ def convert_metashape_to_colmap(
         for src_image_path, base_name in equirect_images_to_process:
             tmp_mask_name = f"{base_name}_mask.png"
             tmp_mask_path = str(tmp_masks_dir / tmp_mask_name)
-            mask_generation_tasks.append((src_image_path, tmp_mask_path, yolo_model_path, invert_mask))
+            mask_generation_tasks.append((src_image_path, tmp_mask_path, yolo_model_path, invert_mask, yolo_classes))
         
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = []
@@ -613,6 +645,7 @@ def convert_metashape_to_colmap(
                         task[1],
                         task[2],
                         task[3],
+                        task[4],
                     )
                 )
             
@@ -813,21 +846,117 @@ def convert_metashape_to_colmap(
     }
 
 
+def load_config(config_path: Path = Path("config.txt")) -> Dict[str, Any]:
+    """Load configuration from config.txt file.
+    
+    The config file should be in simple key=value format:
+        images=./equirect/
+        xml=./cameras.xml
+        output=./colmap_dataset/
+        ply=./dense.ply
+        crop-size=1920
+        fov-deg=90.0
+        flip-vertical=True
+        max-images=10000
+        num-workers=4
+        apply-component-transform-for-ply=False
+        skip-bottom=False
+        generate-masks=False
+        yolo-model=yolo11n-seg.pt
+        yolo-classes=0
+        invert-mask=False
+        yaw-offset=0.0
+        range-images=10-50
+        quiet=False
+    """
+    config = {}
+    if not config_path.exists():
+        return config
+    
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                # Skip empty lines and comments
+                if not line or line.startswith("#"):
+                    continue
+                
+                # Parse key=value
+                if "=" not in line:
+                    print(f"Warning: Ignoring malformed line {line_num} in config.txt: {line}")
+                    continue
+                
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                
+                # Convert value to appropriate type
+                if value.lower() in ("true", "yes", "1"):
+                    config[key] = True
+                elif value.lower() in ("false", "no", "0", ""):
+                    config[key] = False
+                elif value:
+                    config[key] = value
+    except Exception as e:
+        print(f"Warning: Failed to read config.txt: {e}")
+    
+    return config
+
+
 def main() -> int:
+    # Load config.txt first
+    config = load_config()
+    
     parser = argparse.ArgumentParser(
-        description="Convert Metashape equirectangular XML to COLMAP format",
+        description="Convert Metashape equirectangular XML to COLMAP format. "
+                    "Options can be specified via config.txt file (key=value format). "
+                    "Command-line arguments take precedence over config.txt.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--images", type=Path, required=True, help="Directory with equirectangular images")
-    parser.add_argument("--xml", type=Path, required=True, help="Path to Metashape cameras.xml")
-    parser.add_argument("--output", type=Path, required=True, help="Output directory (COLMAP layout)")
-    parser.add_argument("--ply", type=Path, default=None, help="Optional PLY to export points3D.txt")
-    parser.add_argument("--crop-size", type=int, default=1920, help="Crop size for 90° views")
-    parser.add_argument("--fov-deg", type=float, default=90.0, help="Horizontal FoV for rectilinear crops")
+    # Apply config.txt values as defaults, convert Path types
+    parser.add_argument(
+        "--images",
+        type=Path,
+        required="images" not in config,
+        default=Path(config["images"]) if "images" in config else None,
+        help="Directory with equirectangular images"
+    )
+    parser.add_argument(
+        "--xml",
+        type=Path,
+        required="xml" not in config,
+        default=Path(config["xml"]) if "xml" in config else None,
+        help="Path to Metashape cameras.xml"
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        required="output" not in config,
+        default=Path(config["output"]) if "output" in config else None,
+        help="Output directory (COLMAP layout)"
+    )
+    parser.add_argument(
+        "--ply",
+        type=Path,
+        default=Path(config["ply"]) if "ply" in config else None,
+        help="Optional PLY to export points3D.txt"
+    )
+    parser.add_argument(
+        "--crop-size",
+        type=int,
+        default=int(config["crop-size"]) if "crop-size" in config else 1920,
+        help="Crop size for 90° views"
+    )
+    parser.add_argument(
+        "--fov-deg",
+        type=float,
+        default=float(config["fov-deg"]) if "fov-deg" in config else 90.0,
+        help="Horizontal FoV for rectilinear crops"
+    )
     parser.add_argument(
         "--flip-vertical",
         action="store_true",
-        default=True,
+        default=config.get("flip-vertical", True) if isinstance(config.get("flip-vertical"), bool) else True,
         help="Flip vertical direction (invert latitude) when sampling equirect (default: on)",
     )
     parser.add_argument(
@@ -836,17 +965,105 @@ def main() -> int:
         dest="flip_vertical",
         help="Disable vertical flip if your data is already upright",
     )
-    parser.add_argument("--max-images", type=int, default=10000, help="Optional limit on number of equirectangular images to process (for quick tests)")
-    parser.add_argument("--num-workers", type=int, default=4, help="Number of worker processes for parallel image cropping")
-    parser.add_argument("--apply-component-transform-for-ply", action="store_true", default=False, help="Apply component transform for PLY (default: disabled, as PLY is usually pre-transformed in Metashape)")
-    parser.add_argument("--skip-bottom", action="store_true", default=False, help="Skip bottom view (may contain self-reflections)")
-    parser.add_argument("--generate-masks", action="store_true", default=False, help="Generate person masks using YOLO and crop them alongside images")
-    parser.add_argument("--yolo-model", type=str, default="yolo11n-seg.pt", help="YOLO model path for mask generation (default: yolo11n-seg.pt)")
-    parser.add_argument("--invert-mask", action="store_true", default=False, help="Use person=white(255), background=black(0). Default: person=black(0), background=white(255) for 3DGS training")
-    parser.add_argument("--yaw-offset", type=float, default=0.0, help="Yaw rotation offset (degrees) to add per frame. E.g., 45.0 rotates cubemap extraction by 45° for each successive frame. This can improve 3DGS training stability by diversifying view angles.")
-    parser.add_argument("--quiet", action="store_true", help="Suppress progress output")
+    parser.add_argument(
+        "--max-images",
+        type=int,
+        default=int(config["max-images"]) if "max-images" in config else 10000,
+        help="Optional limit on number of equirectangular images to process (for quick tests)"
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=int(config["num-workers"]) if "num-workers" in config else 4,
+        help="Number of worker processes for parallel image cropping"
+    )
+    parser.add_argument(
+        "--apply-component-transform-for-ply",
+        action="store_true",
+        default=config.get("apply-component-transform-for-ply", False) if isinstance(config.get("apply-component-transform-for-ply"), bool) else False,
+        help="Apply component transform for PLY (default: disabled, as PLY is usually pre-transformed in Metashape)"
+    )
+    parser.add_argument(
+        "--skip-bottom",
+        action="store_true",
+        default=config.get("skip-bottom", False) if isinstance(config.get("skip-bottom"), bool) else False,
+        help="Skip bottom view (may contain self-reflections)"
+    )
+    parser.add_argument(
+        "--generate-masks",
+        action="store_true",
+        default=config.get("generate-masks", False) if isinstance(config.get("generate-masks"), bool) else False,
+        help="Generate person masks using YOLO and crop them alongside images"
+    )
+    parser.add_argument(
+        "--yolo-model",
+        type=str,
+        default=config.get("yolo-model", "yolo11n-seg.pt"),
+        help="YOLO model path for mask generation (default: yolo11n-seg.pt)"
+    )
+    parser.add_argument(
+        "--yolo-classes",
+        type=str,
+        default=config.get("yolo-classes", "0"),
+        help="Comma-separated YOLO class IDs to include in mask (default: 0 for person). Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck. Example: 0,2,5 for person, car, and bus."
+    )
+    parser.add_argument(
+        "--invert-mask",
+        action="store_true",
+        default=config.get("invert-mask", False) if isinstance(config.get("invert-mask"), bool) else False,
+        help="Use object=white(255), background=black(0). Default: object=black(0), background=white(255) for 3DGS training"
+    )
+    parser.add_argument(
+        "--yaw-offset",
+        type=float,
+        default=float(config["yaw-offset"]) if "yaw-offset" in config else 0.0,
+        help="Yaw rotation offset (degrees) to add per frame. E.g., 45.0 rotates cubemap extraction by 45° for each successive frame. This can improve 3DGS training stability by diversifying view angles."
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        default=config.get("quiet", False) if isinstance(config.get("quiet"), bool) else False,
+        help="Suppress progress output"
+    )
+    parser.add_argument(
+        "--range-images",
+        type=str,
+        default=config.get("range-images"),
+        help="Range of images to process (format: START-END, e.g., 10-50). Processes images from START to END (inclusive, 0-based index)."
+    )
 
     args = parser.parse_args()
+    
+    # Parse yolo-classes if specified
+    yolo_classes = None
+    if args.yolo_classes:
+        try:
+            yolo_classes = [int(x.strip()) for x in args.yolo_classes.split(",")]
+            if any(c < 0 for c in yolo_classes):
+                print(f"Error: All YOLO class IDs must be non-negative integers.")
+                return 1
+        except ValueError:
+            print(f"Error: Invalid yolo-classes format. Use comma-separated integers (e.g., 0,2,5).")
+            return 1
+    
+    # Parse range-images if specified
+    range_images = None
+    if args.range_images:
+        try:
+            if "-" in args.range_images:
+                start_str, end_str = args.range_images.split("-", 1)
+                range_start = int(start_str.strip())
+                range_end = int(end_str.strip())
+                if range_start < 0 or range_end < range_start:
+                    print(f"Error: Invalid range-images format. START must be >= 0 and END must be >= START.")
+                    return 1
+                range_images = (range_start, range_end)
+            else:
+                print(f"Error: Invalid range-images format. Use START-END format (e.g., 10-50).")
+                return 1
+        except ValueError:
+            print(f"Error: Invalid range-images format. Both START and END must be integers.")
+            return 1
 
     if not args.images.is_dir():
         print(f"Error: Images directory not found: {args.images}")
@@ -876,6 +1093,8 @@ def main() -> int:
             yolo_model_path=args.yolo_model,
             invert_mask=args.invert_mask,
             yaw_offset_per_frame=args.yaw_offset,
+            range_images=range_images,
+            yolo_classes=yolo_classes,
         )
         if not args.quiet:
             print("\nConversion complete!")

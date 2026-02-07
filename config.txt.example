@@ -1,0 +1,36 @@
+# Configuration file for metashape_360_to_colmap.py
+# Lines starting with # are comments and will be ignored
+# Use key=value format
+# Command-line arguments take precedence over these settings
+
+# Required parameters (if not specified on command line)
+images=./equirect/
+xml=./cameras.xml
+ply=./dense.ply
+output=./colmap_dataset/
+
+# Optional parameters
+crop-size=1920
+fov-deg=90.0
+max-images=10000
+# Range of images to process (START-END format, 0-based index, e.g., 10-50)
+# Comment out or remove this line to process all images
+range-images=1-10000
+num-workers=4
+generate-masks=True
+invert-mask=False
+yaw-offset=0.0
+skip-bottom=False
+quiet=False
+
+# YOLO class IDs to include in mask (comma-separated)
+# 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck, etc.
+# Example: 0 (person only), or 0,2,5 (person, car, and bus)
+yolo-classes=0
+
+
+# Don't change. For development
+yolo-model=yolo11n-seg.pt
+apply-component-transform-for-ply=False
+flip-vertical=True
+

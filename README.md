@@ -47,8 +47,30 @@ python metashape_360_to_colmap.py \
   --num-workers 4 \
   --max-images 50 \ # If you test quickly, specify small number. default 10000
   --yaw-offset 30 \ # If needed, rotate cubemap for each extraction to be more stable for 3DGS. default 0
-  --generate-masks # mask for human if needed　
+  --generate-masks \ # Generate masks for specified objects
+  --yolo-classes 0,2,5 # Mask person (0), car (2), and bus (5). Default: 0 (person only)
 ```
+
+### Using Configuration File / 設定ファイルの使用
+You can specify options in `config.txt` file instead of command-line arguments. Create a `config.txt` in the same directory as the script:
+
+```
+# config.txt example
+images=./equirect/
+xml=./cameras.xml
+output=./colmap_dataset/
+ply=./dense.ply
+crop-size=1920
+fov-deg=90.0
+num-workers=4
+max-images=10000
+yaw-offset=30
+generate-masks=True
+```
+
+**Priority:** Command-line arguments > config.txt > default values
+
+If you specify an option on the command line, it will override the value in config.txt. See [config.txt.example](config.txt.example) for all available options.
 
 ### Key options / 主なオプション
 - `--images` (req): Directory of equirectangular images
@@ -58,20 +80,33 @@ python metashape_360_to_colmap.py \
 - `--crop-size`: Crop resolution (square). Default 1920.
 - `--fov-deg`: Horizontal FoV of rectilinear crops. Default 90.
 - `--max-images`: Limit number of source equirects for quick tests (default 10000)
+- `--range-images`: Range of images to process (format: `START-END`, e.g., `10-50`). Processes images from START to END (inclusive, 0-based index). Useful for processing specific subsets of images.
 - `--num-workers`: Number of process for image reframing (default 4)
 - `--skip-bottom`: Ignore bottom images for 3DGS training (default false)
-- `--generate-masks` : Generate masks for human
+- `--generate-masks` : Generate masks for specified objects using YOLO
+- `--yolo-classes`: Comma-separated YOLO class IDs to include in mask (default: 0 for person only). Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck. Example: `--yolo-classes 0,2,5` for person, car, and bus.
 - `--invert-mask` : Invert mask color from BLACK to WHITE
 - `--yaw-offset`: Yaw rotation offset (degrees) per frame. E.g., `45.0` rotates cubemap extraction by 45° for each successive frame. This can improve 3DGS training stability by diversifying view angles. (default 0.0) 
 
 ### Outputs / 出力
 - `output/ images/`: Cropped images (4 per input frame)
-- `output/ masks/`: Mask images for human if the option (--generate-masks) is specified
+- `output/ masks/`: Mask images for specified objects if the option (--generate-masks) is specified
 - `output/ tmp`: tmp folder for generating mask process. Able to delete after finishing
 - `output/ cameras.txt`
 - `output/ images.txt`
 - `output/ points3D.txt` (+ `points3D.ply` when PLY given)
-- 
+
+### YOLO COCO Classes Reference / YOLOクラスID参考
+Common COCO dataset class IDs for `--yolo-classes`:
+- 0: person
+- 1: bicycle
+- 2: car
+- 3: motorcycle
+- 5: bus
+- 7: truck
+- 16: dog
+- 17: cat
+- [Full COCO class list](https://github.com/ultralytics/ultralytics/blob/main/ultralytics/cfg/datasets/coco.yaml)
 
 ## Notes / 補足
 - I confirmed that it worked with PostShot for 3DGS train.
