@@ -38,6 +38,13 @@ baseline-threshold=0.1
 # Default: 3
 min-observations=3
 
+# Window size for frame comparison
+# Compare each frame with +/-N frames to find redundancy
+# 1 = compare with adjacent frames only (fast)
+# Higher = compare with more frames (more aggressive decimation, slower)
+# Default: 1
+window-size=1
+
 # Comma-separated list of directions to skip (optional)
 # Valid: top, front, right, back, left, bottom
 # Example: skip-directions=bottom (skip only bottom)

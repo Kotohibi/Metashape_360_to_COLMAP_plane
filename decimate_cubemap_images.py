@@ -32,7 +32,7 @@ import pickle
 import re
 import shutil
 from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -463,12 +463,55 @@ def count_point_observations(
     return point_counts
 
 
+def compute_frame_redundancy_worker(
+    task: Tuple[int, str, Dict[str, Set[int]], np.ndarray, List[str], List[Tuple[str, Dict[str, Set[int]], np.ndarray]]]
+) -> Tuple[int, str, float, float]:
+    """
+    Worker function for parallel frame redundancy computation.
+    
+    Args:
+        task: (frame_index, frame_name, visible_points, camera_pos, directions, 
+               list of (other_name, other_visible_points, other_camera_pos))
+    
+    Returns:
+        (frame_index, frame_name, max_overlap, min_baseline)
+    """
+    frame_idx, frame_name, visible_points, camera_pos, directions, others = task
+    
+    max_overlap = 0.0
+    min_baseline = float('inf')
+    
+    for other_name, other_visible_points, other_camera_pos in others:
+        # Calculate overlap per direction
+        valid_overlaps = []
+        for direction in directions:
+            if direction in visible_points and direction in other_visible_points:
+                curr_points = visible_points[direction]
+                other_points = other_visible_points[direction]
+                if curr_points:
+                    intersection = curr_points & other_points
+                    overlap = len(intersection) / len(curr_points)
+                    valid_overlaps.append(overlap)
+        
+        avg_overlap = np.mean(valid_overlaps) if valid_overlaps else 0.0
+        baseline = np.linalg.norm(camera_pos - other_camera_pos)
+        
+        max_overlap = max(max_overlap, avg_overlap)
+        min_baseline = min(min_baseline, baseline)
+    
+    if min_baseline == float('inf'):
+        min_baseline = 0.0
+    
+    return (frame_idx, frame_name, max_overlap, min_baseline)
+
+
 def decimate_frames(
     frames: Dict[str, Frame],
     directions: List[str],
     overlap_threshold: float = 0.8,
     baseline_threshold: float = 0.1,
     min_observations: int = 3,
+    window_size: int = 1,
     verbose: bool = True,
     show_stats: bool = True,
 ) -> Tuple[Set[str], Set[str]]:
@@ -481,6 +524,7 @@ def decimate_frames(
         overlap_threshold: Frames with overlap > this are candidates for removal
         baseline_threshold: Frames with baseline < this are candidates for removal
         min_observations: Each point should be observed at least this many times
+        window_size: Compare each frame with this many frames before/after (1=adjacent only)
         verbose: Print progress
         show_stats: Show overlap and baseline statistics for threshold tuning
     
@@ -503,24 +547,64 @@ def decimate_frames(
         print(f"  Overlap threshold: {overlap_threshold}")
         print(f"  Baseline threshold: {baseline_threshold}")
         print(f"  Min observations: {min_observations}")
+        print(f"  Window size: {window_size} (compare with +/-{window_size} frames)")
     
     # First pass: calculate all redundancy metrics and identify candidates
-    all_metrics: List[Tuple[str, float, float]] = []  # (frame_name, overlap, baseline)
-    redundant_candidates: List[Tuple[str, float, float]] = []  # (frame_name, overlap, baseline)
+    # Compare each frame with frames within the window
+    all_metrics: List[Tuple[str, float, float]] = []  # (frame_name, max_overlap, min_baseline)
+    redundant_candidates: List[Tuple[str, float, float]] = []  # (frame_name, max_overlap, min_baseline)
     
-    for i in range(1, len(sorted_frame_names)):
+    if verbose:
+        print(f"  Comparing {len(sorted_frame_names)} frames (window_size={window_size})...")
+    
+    for i in range(len(sorted_frame_names)):
         frame_curr = frames[sorted_frame_names[i]]
-        frame_prev = frames[sorted_frame_names[i - 1]]
         
-        avg_overlap, baseline, per_dir = calculate_frame_redundancy(
-            frame_curr, frame_prev, directions
-        )
+        # Compare with frames within window (before and after)
+        max_overlap = 0.0
+        min_baseline = float('inf')
         
-        all_metrics.append((sorted_frame_names[i], avg_overlap, baseline))
+        for offset in range(-window_size, window_size + 1):
+            if offset == 0:
+                continue  # Skip self
+            j = i + offset
+            if j < 0 or j >= len(sorted_frame_names):
+                continue  # Out of bounds
+            
+            frame_other = frames[sorted_frame_names[j]]
+            
+            # Calculate overlap per direction
+            valid_overlaps = []
+            for direction in directions:
+                if direction in frame_curr.visible_points and direction in frame_other.visible_points:
+                    curr_points = frame_curr.visible_points[direction]
+                    other_points = frame_other.visible_points[direction]
+                    if curr_points:
+                        intersection = curr_points & other_points
+                        overlap = len(intersection) / len(curr_points)
+                        valid_overlaps.append(overlap)
+            
+            avg_overlap = np.mean(valid_overlaps) if valid_overlaps else 0.0
+            baseline = np.linalg.norm(frame_curr.camera_position - frame_other.camera_position)
+            
+            max_overlap = max(max_overlap, avg_overlap)
+            min_baseline = min(min_baseline, baseline)
+        
+        if min_baseline == float('inf'):
+            min_baseline = 0.0
+        
+        all_metrics.append((sorted_frame_names[i], max_overlap, min_baseline))
         
         # Check if frame is redundant
-        if avg_overlap > overlap_threshold and baseline < baseline_threshold:
-            redundant_candidates.append((sorted_frame_names[i], avg_overlap, baseline))
+        if max_overlap > overlap_threshold and min_baseline < baseline_threshold:
+            redundant_candidates.append((sorted_frame_names[i], max_overlap, min_baseline))
+        
+        # Progress
+        if verbose and (i + 1) % 100 == 0:
+            print(f"    Progress: {i+1}/{len(sorted_frame_names)} frames ({(i+1)*100//len(sorted_frame_names)}%)")
+    
+    if verbose:
+        print(f"    Progress: {len(sorted_frame_names)}/{len(sorted_frame_names)} frames (100%)")
     
     # Show statistics for threshold tuning
     if show_stats and all_metrics:
@@ -813,6 +897,7 @@ def decimate_cubemap_images(
     overlap_threshold: float = 0.8,
     baseline_threshold: float = 0.1,
     min_observations: int = 3,
+    window_size: int = 1,
     skip_directions: Optional[List[str]] = None,
     copy_images: bool = True,
     max_depth: float = 100.0,
@@ -1029,6 +1114,7 @@ def decimate_cubemap_images(
         overlap_threshold=overlap_threshold,
         baseline_threshold=baseline_threshold,
         min_observations=min_observations,
+        window_size=window_size,
         verbose=verbose,
         show_stats=not no_stats,
     )
@@ -1130,6 +1216,12 @@ def main() -> int:
         help="Minimum observation count per 3D point",
     )
     parser.add_argument(
+        "--window-size",
+        type=int,
+        default=int(config.get("window-size", 1)),
+        help="Compare each frame with +/-N frames (1=adjacent only, higher=more aggressive decimation)",
+    )
+    parser.add_argument(
         "--skip-directions",
         type=str,
         default=config.get("skip-directions", ""),
@@ -1218,6 +1310,7 @@ def main() -> int:
             overlap_threshold=args.overlap_threshold,
             baseline_threshold=args.baseline_threshold,
             min_observations=args.min_observations,
+            window_size=args.window_size,
             skip_directions=skip_directions_list,
             copy_images=not args.no_copy_images,
             max_depth=args.max_depth,
