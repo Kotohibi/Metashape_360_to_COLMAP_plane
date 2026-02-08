@@ -436,7 +436,7 @@ def convert_metashape_to_colmap(
     verbose: bool = True,
     num_workers: int = 4,
     skip_component_transform_for_ply: bool = True,
-    skip_bottom: bool = False,
+    skip_directions: Optional[list] = None,
     generate_masks: bool = False,
     yolo_model_path: str = "yolo11n-seg.pt",
     invert_mask: bool = False,
@@ -447,6 +447,8 @@ def convert_metashape_to_colmap(
     """Convert Metashape equirectangular data to COLMAP format.
     
     Args:
+        skip_directions: List of directions to skip (e.g., ["bottom", "top"]).
+                         Valid directions: top, front, right, back, left, bottom.
         yaw_offset_per_frame: Yaw rotation offset (degrees) to add per frame.
                               E.g., 45.0 means frame 0 has 0° offset, frame 1 has 45°, etc.
                               This can improve 3DGS training stability by diversifying view angles.
@@ -518,9 +520,14 @@ def convert_metashape_to_colmap(
     processed_images = 0
     processed_cameras = 0
     num_skipped = 0
-    directions = ["top", "front", "right", "back", "left", "bottom"]
-    if skip_bottom:
-        directions = ["top", "front", "right", "back", "left"]
+    all_directions = ["top", "front", "right", "back", "left", "bottom"]
+    if skip_directions is None:
+        skip_directions = []
+    directions = [d for d in all_directions if d not in skip_directions]
+    
+    if verbose and skip_directions:
+        print(f"  Skipping directions: {skip_directions}")
+        print(f"  Using directions: {directions}")
 
     # Collect all crop tasks for parallel processing
     crop_tasks = []  # List of (src_image_path, base_name, direction, R_c2w, t_c2w, camera_label)
@@ -627,7 +634,7 @@ def convert_metashape_to_colmap(
     # Generate masks in parallel if requested
     if generate_masks and equirect_images_to_process:
         if verbose:
-            print(f"Generating {len(equirect_images_to_process)} person masks with YOLO (parallel)...")
+            print(f"Generating {len(equirect_images_to_process)} masks with YOLO (parallel)...")
         
         mask_generation_tasks = []
         for src_image_path, base_name in equirect_images_to_process:
@@ -860,7 +867,7 @@ def load_config(config_path: Path = Path("config.txt")) -> Dict[str, Any]:
         max-images=10000
         num-workers=4
         apply-component-transform-for-ply=False
-        skip-bottom=False
+        skip-directions=bottom
         generate-masks=False
         yolo-model=yolo11n-seg.pt
         yolo-classes=0
@@ -996,10 +1003,10 @@ def main() -> int:
         help="Apply component transform for PLY (default: disabled, as PLY is usually pre-transformed in Metashape)"
     )
     parser.add_argument(
-        "--skip-bottom",
-        action="store_true",
-        default=config.get("skip-bottom", False) if isinstance(config.get("skip-bottom"), bool) else False,
-        help="Skip bottom view (may contain self-reflections)"
+        "--skip-directions",
+        type=str,
+        default=config.get("skip-directions", ""),
+        help="Comma-separated list of directions to skip (e.g., 'bottom' or 'top,bottom'). Valid: top,front,right,back,left,bottom"
     )
     parser.add_argument(
         "--generate-masks",
@@ -1058,6 +1065,16 @@ def main() -> int:
             print(f"Error: Invalid yolo-classes format. Use comma-separated integers (e.g., 0,2,5).")
             return 1
     
+    # Parse skip-directions if specified
+    valid_directions = {"top", "front", "right", "back", "left", "bottom"}
+    skip_directions_list = None
+    if args.skip_directions:
+        skip_directions_list = [d.strip().lower() for d in args.skip_directions.split(",") if d.strip()]
+        invalid_dirs = set(skip_directions_list) - valid_directions
+        if invalid_dirs:
+            print(f"Error: Invalid directions: {invalid_dirs}. Valid: {valid_directions}")
+            return 1
+    
     # Parse range-images if specified
     range_images = None
     if args.range_images:
@@ -1100,7 +1117,7 @@ def main() -> int:
             num_workers=args.num_workers,
             skip_component_transform_for_ply=not args.apply_component_transform_for_ply,
             verbose=not args.quiet,
-            skip_bottom=args.skip_bottom,
+            skip_directions=skip_directions_list,
             generate_masks=args.generate_masks,
             yolo_model_path=args.yolo_model,
             invert_mask=args.invert_mask,

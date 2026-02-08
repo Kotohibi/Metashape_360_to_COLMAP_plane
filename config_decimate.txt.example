@@ -1,0 +1,68 @@
+# Configuration for decimate_cubemap_images.py
+# Cubemap Image Decimation Tool for 3DGS Training
+#
+# This tool intelligently removes redundant frames based on:
+# - View frustum point cloud overlap (how many same 3D points are visible)
+# - Camera baseline distance (how far the camera moved)
+#
+# Algorithm:
+# 1. Frames with high overlap (> overlap-threshold) AND small baseline (< baseline-threshold)
+#    are considered redundant
+# 2. Redundant frames are removed only if all 3D points maintain min-observations
+# 3. This ensures 3DGS training quality while reducing dataset size
+
+# Required: Input directory (COLMAP format with cameras.txt, images.txt, points3D.txt/ply)
+input=./colmap_dataset/
+
+# Required: Output directory for decimated dataset
+output=./decimated_dataset/
+
+# Overlap threshold (0.0-1.0)
+# Frames with average overlap > this value are candidates for removal
+# Lower value = more aggressive decimation (keep fewer frames)
+# Higher value = more conservative decimation (keep more frames)
+# Default: 0.8 (80% overlap)
+overlap-threshold=0.8
+
+# Baseline distance threshold (in world units)
+# Frames with camera movement < this value are candidates for removal
+# Larger value = more aggressive decimation (keep fewer frames)
+# Smaller value = more conservative decimation (keep more frames)
+# Default: 0.1 (depends on your scene scale)
+baseline-threshold=0.1
+
+# Minimum observation count per 3D point
+# Each 3D point must be observed by at least this many frames
+# Higher value = safer for 3DGS quality, less decimation
+# Lower value = more aggressive decimation
+# Default: 3
+min-observations=3
+
+# Comma-separated list of directions to skip (optional)
+# Valid: top, front, right, back, left, bottom
+# Example: skip-directions=bottom (skip only bottom)
+# Example: skip-directions=top,bottom (skip top and bottom)
+# Default: none (all 6 directions are used)
+skip-directions=
+
+# Don't copy image files to output (only write txt files)
+# Default: False (images are copied)
+no-copy-images=False
+
+# Maximum depth for point visibility check (world units)
+# Points beyond this depth are not considered visible
+# Default: 100.0
+max-depth=100.0
+
+# Number of parallel worker processes for visibility calculation
+# Higher values speed up processing on multi-core CPUs
+# Default: 4
+num-workers=4
+
+# Path to visibility cache file (optional)
+# If not specified, uses input_dir/visibility_cache.pkl
+# cache-file=./visibility_cache.pkl
+
+# Suppress progress output
+# Default: False
+quiet=False

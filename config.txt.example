@@ -24,7 +24,9 @@ num-workers=4
 generate-masks=True
 invert-mask=False
 yaw-offset=0.0
-skip-bottom=False
+# Comma-separated list of directions to skip (e.g., bottom or top,bottom)
+# Valid: top, front, right, back, left, bottom
+skip-directions=
 quiet=False
 
 # YOLO class IDs to include in mask (comma-separated)
