@@ -8,6 +8,7 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
 Refer to my X
 - https://x.com/naribubu/status/2015376645360849394
 - https://x.com/naribubu/status/2016517770876440901
+- https://x.com/naribubu/status/2020138127084695876
 - https://x.com/naribubu/status/2017883648075391214 (As for --yaw-offset otpion)
 
 Refer to other URL
@@ -89,7 +90,7 @@ If you specify an option on the command line, it will override the value in conf
 - `--max-images`: Limit number of source equirects for quick tests (default 10000)
 - `--range-images`: Range of images to process (format: `START-END`, e.g., `10-50`). Processes images from START to END (inclusive, 0-based index). Useful for processing specific subsets of images.
 - `--num-workers`: Number of process for image reframing (default 4)
-- `--skip-bottom`: Ignore bottom images for 3DGS training (default false)
+- `skip-directions=`:Comma-separated list of directions to skip (top, front, right, back, left, bottom)
 - `--generate-masks` : Generate masks for specified objects using YOLO
 - `--yolo-classes`: Comma-separated YOLO class IDs to include in mask (default: 0 for person only). Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck. Example: `--yolo-classes 0,2,5` for person, car, and bus.
 - `--invert-mask` : Invert mask color from BLACK to WHITE
