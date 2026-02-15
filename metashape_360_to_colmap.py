@@ -337,7 +337,7 @@ def crop_and_save_image(
         flip_vertical=flip_vertical,
         yaw_offset=yaw_offset,
     )
-    cropped.save(output_image_path, quality=95)
+    cropped.save(output_image_path, quality=100)
     
     # Crop and save mask if provided
     if mask_image_path is not None and output_mask_path is not None:
