@@ -39,4 +39,5 @@ yolo-classes=0
 yolo-model=yolo11n-seg.pt
 apply-component-transform-for-ply=False
 flip-vertical=True
-
+# Rotate scene 180° around Z-axis (for PostShot coordinate system compatibility)
+rotate-z180=True

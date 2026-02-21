@@ -23,6 +23,7 @@ Refer to other URL
 - Adjustable FoV and crop size; vertical flip for sampling equirect
 - Optional image-count cap for quick tests
 - Generate masks for human
+- Z-axis 180° rotation option for PostShot coordinate system compatibility
 
 ## Requirements / 必要環境
 - Metashape Standard (https://www.agisoft.com/features/standard-edition/)
@@ -49,7 +50,8 @@ python metashape_360_to_colmap.py \
   --max-images 50 \ # If you test quickly, specify small number. default 10000
   --yaw-offset 30 \ # If needed, rotate cubemap for each extraction to be more stable for 3DGS. default 0
   --generate-masks \ # Generate masks for specified objects
-  --yolo-classes 0,2,5 # Mask person (0), car (2), and bus (5). Default: 0 (person only)
+  --yolo-classes 0,2,5 \ # Mask person (0), car (2), and bus (5). Default: 0 (person only)
+  --rotate-z180 # Rotate scene 180° around Z-axis for PostShot compatibility, default True
 ```
 
 ### Using Configuration File / 設定ファイルの使用
@@ -67,6 +69,7 @@ num-workers=4
 max-images=10000
 yaw-offset=30
 generate-masks=True
+rotate-z180=True
 ```
 
 **For paths with spaces (Windows users):** Enclose paths in quotes (single or double):
@@ -95,6 +98,7 @@ If you specify an option on the command line, it will override the value in conf
 - `--yolo-classes`: Comma-separated YOLO class IDs to include in mask (default: 0 for person only). Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck. Example: `--yolo-classes 0,2,5` for person, car, and bus.
 - `--invert-mask` : Invert mask color from BLACK to WHITE
 - `--yaw-offset`: Yaw rotation offset (degrees) per frame. E.g., `45.0` rotates cubemap extraction by 45° for each successive frame. This can improve 3DGS training stability by diversifying view angles. (default 0.0) 
+- `--rotate-z180`: Rotate the entire scene 180° around the Z-axis for PostShot coordinate system compatibility (default: on). Applies to both `images.txt` (camera extrinsics) and `points3D.txt` / `points3D.ply` (point cloud). Use `--no-rotate-z180` to disable.
 
 ### Outputs / 出力
 - `output/ images/`: Cropped images (4 per input frame)
@@ -118,6 +122,7 @@ Common COCO dataset class IDs for `--yolo-classes`:
 
 ## Notes / 補足
 - I confirmed that it worked with PostShot for 3DGS train.
+- When using PostShot for 3DGS training, use `--rotate-z180` to fix coordinate system differences (180° rotation around Z-axis).
 - Only spherical sensors are supported; uses the first component transform when multiple are present.
 - Intrinsics per crop are PINHOLE with `fx=fy=(w/2)/tan(fov/2)`, `cx=cy=w/2`.
 - If orientations look wrong, verify top/front/right/back/left/bottom yaw definitions and FoV.

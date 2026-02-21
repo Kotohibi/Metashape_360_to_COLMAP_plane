@@ -443,6 +443,7 @@ def convert_metashape_to_colmap(
     yaw_offset_per_frame: float = 0.0,
     range_images: Optional[Tuple[int, int]] = None,
     yolo_classes: Optional[list] = None,
+    rotate_z180: bool = False,
 ) -> Dict[str, Any]:
     """Convert Metashape equirectangular data to COLMAP format.
     
@@ -457,6 +458,8 @@ def convert_metashape_to_colmap(
                       If None, processes all images (up to max_images if specified).
         yolo_classes: List of YOLO class IDs to include in mask. If None, uses [0] (person only).
                       Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck, etc.
+        rotate_z180: If True, rotate the entire scene 180° around Z-axis.
+                     This fixes coordinate system differences between COLMAP and PostShot.
     """
     if output_dir is None:
         output_dir = xml_path.parent
@@ -736,6 +739,13 @@ def convert_metashape_to_colmap(
 
         R_w2c = R_c2w_dir.T
         t_w2c = -R_w2c @ t_c2w
+
+        # Apply 180° rotation around Z-axis for PostShot coordinate system
+        if rotate_z180:
+            R_z180 = np.array([[-1, 0, 0], [0, -1, 0], [0, 0, 1]], dtype=np.float64)
+            R_w2c = R_w2c @ R_z180
+            # t_w2c stays the same (derivation: t_new = -(R@Rz) @ (Rz@c) = -R@c = t)
+
         q = quaternion_from_matrix(R_w2c)
 
         images_colmap[image_id] = {
@@ -810,6 +820,13 @@ def convert_metashape_to_colmap(
         elif skip_component_transform_for_ply and verbose:
             print(f"  Skipping component transform for PLY (--skip-component-transform-for-ply enabled)")
 
+        # Apply 180° rotation around Z-axis for PostShot coordinate system
+        if rotate_z180:
+            R_z180 = np.array([[-1, 0, 0], [0, -1, 0], [0, 0, 1]], dtype=np.float64)
+            points3d = (R_z180 @ points3d.T).T
+            if verbose:
+                print("  Applied 180° Z-axis rotation to point cloud (for PostShot)")
+
         for idx, point in enumerate(points3d, start=1):
             x, y, z = point
             if colors is not None:
@@ -874,6 +891,7 @@ def load_config(config_path: Path = Path("config.txt")) -> Dict[str, Any]:
         invert-mask=False
         yaw-offset=0.0
         range-images=10-50
+        rotate-z180=True
         quiet=False
     
     Paths with spaces should be enclosed in quotes (single or double):
@@ -1039,6 +1057,18 @@ def main() -> int:
         help="Yaw rotation offset (degrees) to add per frame. E.g., 45.0 rotates cubemap extraction by 45° for each successive frame. This can improve 3DGS training stability by diversifying view angles."
     )
     parser.add_argument(
+        "--rotate-z180",
+        action="store_true",
+        default=config.get("rotate-z180", True) if isinstance(config.get("rotate-z180"), bool) else True,
+        help="Rotate the entire scene 180° around Z-axis for PostShot coordinate system compatibility (default: on)"
+    )
+    parser.add_argument(
+        "--no-rotate-z180",
+        action="store_false",
+        dest="rotate_z180",
+        help="Disable Z-axis 180° rotation"
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
         default=config.get("quiet", False) if isinstance(config.get("quiet"), bool) else False,
@@ -1124,6 +1154,7 @@ def main() -> int:
             yaw_offset_per_frame=args.yaw_offset,
             range_images=range_images,
             yolo_classes=yolo_classes,
+            rotate_z180=args.rotate_z180,
         )
         if not args.quiet:
             print("\nConversion complete!")
