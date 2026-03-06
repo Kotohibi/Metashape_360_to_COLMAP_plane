@@ -21,6 +21,7 @@ Dependencies:
 
 import argparse
 import configparser
+import sys
 import xml.etree.ElementTree as ET
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -230,13 +231,52 @@ def quaternion_from_matrix(R: np.ndarray) -> np.ndarray:
     return q / np.linalg.norm(q)
 
 
+def create_overexposure_mask(
+    image: Image.Image,
+    threshold: int = 250,
+    dilate_pixels: int = 5,
+) -> np.ndarray:
+    """Detect white-blown-out (overexposed) pixels and return a binary mask.
+    
+    Pixels where ALL of R, G, B channels exceed the threshold are considered
+    overexposed. The result is optionally dilated to cover fringe artifacts.
+    
+    Args:
+        image: PIL Image in RGB mode.
+        threshold: Minimum value (0-255) for all channels to be considered
+                   blown-out.  Default 250.
+        dilate_pixels: Radius of morphological dilation applied to the raw
+                       overexposure mask.  Set to 0 to disable.
+    
+    Returns:
+        uint8 numpy array (H, W) where 255 = overexposed, 0 = normal.
+    """
+    img_np = np.array(image)  # (H, W, 3)
+    # All three channels above threshold
+    blown = np.all(img_np >= threshold, axis=-1).astype(np.uint8) * 255
+    
+    if dilate_pixels > 0:
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE,
+            (dilate_pixels * 2 + 1, dilate_pixels * 2 + 1),
+        )
+        blown = cv2.dilate(blown, kernel, iterations=1)
+    
+    return blown
+
+
 def create_person_mask_from_yolo(
     image_path: str,
     yolo_model: Any,
     invert_mask: bool = False,
     class_ids: Optional[list] = None,
+    mask_overexposure: bool = False,
+    overexposure_threshold: int = 250,
+    overexposure_dilate: int = 5,
 ) -> Image.Image:
     """Create a binary mask for detected objects using YOLO.
+    
+    Optionally also masks white-blown-out (overexposed) pixels.
     
     Args:
         image_path: Path to the equirectangular image
@@ -245,6 +285,9 @@ def create_person_mask_from_yolo(
                      If False, object=black(0) and background=white(255) for 3DGS training.
         class_ids: List of YOLO class IDs to include in mask. If None, uses [0] (person only).
                    Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck, etc.
+        mask_overexposure: If True, also mask pixels that are white-blown-out.
+        overexposure_threshold: Pixel value threshold (0-255) for overexposure detection.
+        overexposure_dilate: Dilation radius for overexposure mask (pixels).
     """
     # Load image
     image = Image.open(image_path)
@@ -271,6 +314,15 @@ def create_person_mask_from_yolo(
                     mask_resized = cv2.resize(mask_data, (image.width, image.height))
                     mask = np.maximum(mask, (mask_resized * 255).astype(np.uint8))
     
+    # Combine with overexposure mask if enabled
+    if mask_overexposure:
+        overexposure = create_overexposure_mask(
+            image,
+            threshold=overexposure_threshold,
+            dilate_pixels=overexposure_dilate,
+        )
+        mask = np.maximum(mask, overexposure)
+    
     # Default: person=white(255), background=black(0)
     # Without invert_mask: person=black(0), background=white(255) for 3DGS training
     if not invert_mask:
@@ -285,6 +337,9 @@ def generate_mask_and_save(
     yolo_model_path: str,
     invert_mask: bool = False,
     class_ids: Optional[list] = None,
+    mask_overexposure: bool = False,
+    overexposure_threshold: int = 250,
+    overexposure_dilate: int = 5,
 ) -> Tuple[str, str]:
     """Generate object mask and save to file (for parallel processing).
     
@@ -294,6 +349,9 @@ def generate_mask_and_save(
         yolo_model_path: Path to YOLO model
         invert_mask: Whether to invert the mask
         class_ids: List of YOLO class IDs to include in mask
+        mask_overexposure: Whether to also mask overexposed pixels
+        overexposure_threshold: Pixel value threshold for overexposure detection
+        overexposure_dilate: Dilation radius for overexposure mask
     
     Returns:
         Tuple of (image_path, output_mask_path)
@@ -305,7 +363,12 @@ def generate_mask_and_save(
     yolo_model = YOLO(yolo_model_path)
     
     # Generate mask
-    mask = create_person_mask_from_yolo(image_path, yolo_model, invert_mask, class_ids)
+    mask = create_person_mask_from_yolo(
+        image_path, yolo_model, invert_mask, class_ids,
+        mask_overexposure=mask_overexposure,
+        overexposure_threshold=overexposure_threshold,
+        overexposure_dilate=overexposure_dilate,
+    )
     
     # Save mask
     mask.save(output_mask_path)
@@ -444,6 +507,9 @@ def convert_metashape_to_colmap(
     range_images: Optional[Tuple[int, int]] = None,
     yolo_classes: Optional[list] = None,
     rotate_z180: bool = False,
+    mask_overexposure: bool = False,
+    overexposure_threshold: int = 250,
+    overexposure_dilate: int = 5,
 ) -> Dict[str, Any]:
     """Convert Metashape equirectangular data to COLMAP format.
     
@@ -460,6 +526,9 @@ def convert_metashape_to_colmap(
                       Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck, etc.
         rotate_z180: If True, rotate the entire scene 180° around Z-axis.
                      This fixes coordinate system differences between COLMAP and PostShot.
+        mask_overexposure: If True, also mask white-blown-out (overexposed) pixels.
+        overexposure_threshold: Pixel value threshold (0-255) for overexposure detection.
+        overexposure_dilate: Dilation radius (pixels) for overexposure mask.
     """
     if output_dir is None:
         output_dir = xml_path.parent
@@ -643,7 +712,10 @@ def convert_metashape_to_colmap(
         for src_image_path, base_name in equirect_images_to_process:
             tmp_mask_name = f"{base_name}_mask.png"
             tmp_mask_path = str(tmp_masks_dir / tmp_mask_name)
-            mask_generation_tasks.append((src_image_path, tmp_mask_path, yolo_model_path, invert_mask, yolo_classes))
+            mask_generation_tasks.append((
+                src_image_path, tmp_mask_path, yolo_model_path, invert_mask, yolo_classes,
+                mask_overexposure, overexposure_threshold, overexposure_dilate,
+            ))
         
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = []
@@ -656,19 +728,44 @@ def convert_metashape_to_colmap(
                         task[2],
                         task[3],
                         task[4],
+                        task[5],
+                        task[6],
+                        task[7],
                     )
                 )
+
+            total_masks = len(futures)
+            report_interval = max(1, total_masks // 20)
+            next_report = report_interval
+            use_inline_progress = sys.stdout.isatty()
+
+            if verbose and use_inline_progress:
+                print(f"  Mask progress: 0/{total_masks} (0.0%)", end="\r", flush=True)
             
             for idx, future in enumerate(futures):
                 try:
                     image_path, mask_path = future.result()
                     equirect_mask_paths[image_path] = mask_path
-                    if verbose and (idx + 1) % 10 == 0:
-                        print(f"  Generated {idx + 1}/{len(futures)} masks...")
                 except Exception as exc:
                     if verbose:
-                        print(f"  Error generating mask {idx}: {exc}")
+                        print(f"  Error generating mask {idx + 1}: {exc}")
                     continue
+
+                completed = idx + 1
+                if verbose and (completed >= next_report or completed == total_masks):
+                    progress_msg = (
+                        f"  Mask progress: {completed}/{total_masks} "
+                        f"({(completed / total_masks) * 100:.1f}%)"
+                    )
+                    if use_inline_progress:
+                        print(progress_msg, end="\r", flush=True)
+                    else:
+                        print(progress_msg)
+                    while next_report <= completed:
+                        next_report += report_interval
+
+            if verbose and use_inline_progress:
+                print()
         
         if verbose:
             print(f"  Completed {len(equirect_mask_paths)} masks")
@@ -708,14 +805,40 @@ def convert_metashape_to_colmap(
                         yaw_offset_val,
                     )
                 )
+
+            total_crops = len(futures)
+            # Report progress in small, readable increments (about every 5%).
+            report_interval = max(1, total_crops // 20)
+            next_report = report_interval
+            use_inline_progress = sys.stdout.isatty()
+
+            if verbose and use_inline_progress:
+                print(f"  Cropping progress: 0/{total_crops} (0.0%)", end="\r", flush=True)
             
             for idx, future in enumerate(futures):
                 try:
                     future.result()
                 except Exception as exc:
                     if verbose:
-                        print(f"  Error processing crop {idx}: {exc}")
+                        print(f"  Error processing crop {idx + 1}: {exc}")
                     continue
+
+                completed = idx + 1
+                if verbose and (completed >= next_report or completed == total_crops):
+                    progress_msg = (
+                        f"  Cropping progress: {completed}/{total_crops} "
+                        f"({(completed / total_crops) * 100:.1f}%)"
+                    )
+                    if use_inline_progress:
+                        print(progress_msg, end="\r", flush=True)
+                    else:
+                        print(progress_msg)
+                    while next_report <= completed:
+                        next_report += report_interval
+
+            if verbose and use_inline_progress:
+                # Finish the inline progress line before printing subsequent logs.
+                print()
 
     # Build images_colmap from results
     for idx, (base_name, direction, R_c2w, t_c2w, yaw_offset) in enumerate(camera_metadata):
@@ -1080,6 +1203,24 @@ def main() -> int:
         default=config.get("range-images"),
         help="Range of images to process (format: START-END, e.g., 10-50). Processes images from START to END (inclusive, 0-based index)."
     )
+    parser.add_argument(
+        "--mask-overexposure",
+        action="store_true",
+        default=config.get("mask-overexposure", False) if isinstance(config.get("mask-overexposure"), bool) else False,
+        help="Also mask white-blown-out (overexposed) pixels in the equirectangular images"
+    )
+    parser.add_argument(
+        "--overexposure-threshold",
+        type=int,
+        default=int(config["overexposure-threshold"]) if "overexposure-threshold" in config else 250,
+        help="Pixel value threshold (0-255) above which all-channel pixels are considered overexposed (default: 250)"
+    )
+    parser.add_argument(
+        "--overexposure-dilate",
+        type=int,
+        default=int(config["overexposure-dilate"]) if "overexposure-dilate" in config else 5,
+        help="Dilation radius in pixels for the overexposure mask to cover fringe artifacts (default: 5)"
+    )
 
     args = parser.parse_args()
     
@@ -1155,6 +1296,9 @@ def main() -> int:
             range_images=range_images,
             yolo_classes=yolo_classes,
             rotate_z180=args.rotate_z180,
+            mask_overexposure=args.mask_overexposure,
+            overexposure_threshold=args.overexposure_threshold,
+            overexposure_dilate=args.overexposure_dilate,
         )
         if not args.quiet:
             print("\nConversion complete!")

@@ -23,6 +23,7 @@ Refer to other URL
 - Adjustable FoV and crop size; vertical flip for sampling equirect
 - Optional image-count cap for quick tests
 - Generate masks for human
+- Overexposure (white-blown-out) pixel masking
 - Z-axis 180° rotation option for PostShot coordinate system compatibility
 
 ## Requirements / 必要環境
@@ -51,8 +52,31 @@ python metashape_360_to_colmap.py \
   --yaw-offset 30 \ # If needed, rotate cubemap for each extraction to be more stable for 3DGS. default 0
   --generate-masks \ # Generate masks for specified objects
   --yolo-classes 0,2,5 \ # Mask person (0), car (2), and bus (5). Default: 0 (person only)
+  --mask-overexposure \ # Also mask white-blown-out (overexposed) pixels
+  --overexposure-threshold 250 \ # Pixel value threshold for overexposure detection (default 250)
+  --overexposure-dilate 5 \ # Dilation radius in pixels (default 5)
   --rotate-z180 # Rotate scene 180° around Z-axis for PostShot compatibility, default True
 ```
+
+### GUI app (`metashape_360_gui.py`) / GUIアプリ
+If you prefer interactive operation, launch the GUI:
+
+```bash
+python metashape_360_gui.py
+```
+
+Main points / 主な操作:
+- `Input/Output Paths`: Select image folder, XML, optional PLY, and output folder.
+- `Processing Options` / `Skip Directions` / `Mask Generation`: Available as tabs to reduce vertical space.
+- `Dev Options`: Collapsible section (closed by default) for less frequently used options.
+- `Run Conversion`: Executes conversion with live progress logs in the GUI output panel.
+- `Stop`: Stops the running process and re-enables `Run Conversion`.
+- `Save Config` / `Load Config`: Save/load settings as `config.txt`-style files.
+
+Screenshot / 画面キャプチャ:
+
+
+<img src="docs/images/gui_main.png" alt="GUI Screenshot" width="640" />
 
 ### Using Configuration File / 設定ファイルの使用
 You can specify options in `config.txt` file instead of command-line arguments. Create a `config.txt` in the same directory as the script:
@@ -69,7 +93,6 @@ num-workers=4
 max-images=10000
 yaw-offset=30
 generate-masks=True
-rotate-z180=True
 ```
 
 **For paths with spaces (Windows users):** Enclose paths in quotes (single or double):
@@ -97,6 +120,9 @@ If you specify an option on the command line, it will override the value in conf
 - `--generate-masks` : Generate masks for specified objects using YOLO
 - `--yolo-classes`: Comma-separated YOLO class IDs to include in mask (default: 0 for person only). Common COCO classes: 0=person, 2=car, 3=motorcycle, 5=bus, 7=truck. Example: `--yolo-classes 0,2,5` for person, car, and bus.
 - `--invert-mask` : Invert mask color from BLACK to WHITE
+- `--mask-overexposure`: Also mask white-blown-out (overexposed) pixels. Pixels where all RGB channels exceed the threshold are detected and masked.(default False)
+- `--overexposure-threshold`: Pixel value threshold (0-255) for overexposure detection (default: 250)
+- `--overexposure-dilate`: Dilation radius in pixels to cover fringe artifacts around blown-out areas (default: 5)
 - `--yaw-offset`: Yaw rotation offset (degrees) per frame. E.g., `45.0` rotates cubemap extraction by 45° for each successive frame. This can improve 3DGS training stability by diversifying view angles. (default 0.0) 
 - `--rotate-z180`: Rotate the entire scene 180° around the Z-axis for PostShot coordinate system compatibility (default: on). Applies to both `images.txt` (camera extrinsics) and `points3D.txt` / `points3D.ply` (point cloud). Use `--no-rotate-z180` to disable.
 
