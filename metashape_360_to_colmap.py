@@ -978,8 +978,16 @@ def convert_metashape_to_colmap(
         f.write("# 3D point list with one line of data per point:\n")
         f.write("# POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
         f.write(f"# Number of points: {len(points3d_data)}\n")
+        batch_size = 10000
+        point_lines = []
         for pid, x, y, z, r, g, b, err, track in points3d_data:
-            f.write(f"{pid} {x:.6f} {y:.6f} {z:.6f} {r} {g} {b} {err} {track}\n")
+            point_lines.append(f"{pid} {x:.6f} {y:.6f} {z:.6f} {r} {g} {b} {err} {track}\n")
+            if len(point_lines) >= batch_size:
+                f.write("".join(point_lines))
+                point_lines.clear()
+
+        if point_lines:
+            f.write("".join(point_lines))
 
     if verbose:
         print(f"Wrote cameras.txt, images.txt, points3D.txt to {output_dir}")
