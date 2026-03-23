@@ -15,7 +15,12 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
     - See https://x.com/naribubu/status/2031004096975781946?s=20
 ---
 
+Refer to the detail workflow
+- [[English]Easy&Fast 3D Gaussian Splatting workflow with 360 Camera](https://zenn.dev/kotohibi/articles/409bc16876b9e0)
+- [[日本語]Easy&Fast 3D Gaussian Splatting workflow with 360 Camera](https://zenn.dev/kotohibi/articles/28b137f1873921)
+
 Refer to my X
+- https://x.com/naribubu/status/2034937726756430125
 - https://x.com/naribubu/status/2015376645360849394
 - https://x.com/naribubu/status/2016517770876440901
 - https://x.com/naribubu/status/2020138127084695876
