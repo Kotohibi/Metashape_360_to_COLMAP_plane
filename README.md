@@ -8,11 +8,14 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
 ---
 **Windows binary edition with GUI is sold on BOOTH. No need python command and easy to run!**
 - [BOOTH URL] https://kotohibi-cg.booth.pm/ 
-  - Only binary edition can support dual mask mode which can generate accurate mask. 
-    - Added a mode that performs mask processing with equirectangular and cubemap and fuses them at the end. 
-    - Although the processing time will increase, the mask processing system has been improved.
-    - <img src="docs/images/dual_mask_mode.png" alt="Dual mask mode" width="320" />
-    - See https://x.com/naribubu/status/2031004096975781946?s=20
+  - Only binary edition can support the following features
+    1. Dual mask mode which can generate more accurate masks. 
+       - Added a mode that performs mask processing with equirectangular and cubemap and fuses them at the end. 
+       - Although the processing time will increase, the mask processing system has been improved.
+       - <img src="docs/images/dual_mask_mode.png" alt="Dual mask mode" width="320" />
+       - See https://x.com/naribubu/status/2031004096975781946?s=20
+    2. Export PNG file support
+       - For better 3DGS training
 ---
 
 Refer to the detail workflow
