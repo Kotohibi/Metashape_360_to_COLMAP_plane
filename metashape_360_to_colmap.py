@@ -840,7 +840,7 @@ def convert_metashape_to_colmap(
             output_image_name = f"{base_name}_{direction}{output_ext}"
             output_image_path = str(images_output_dir / output_image_name)
             crop_tasks.append((str(src_image_path), direction, crop_size, output_image_path, fov_deg, flip_vertical, current_yaw_offset, preserve_alpha))
-            camera_metadata.append((base_name, direction, R_c2w, t_c2w, current_yaw_offset))
+            camera_metadata.append((base_name, direction, R_c2w, t_c2w, current_yaw_offset, output_ext))
 
         processed_cameras += 1
         frame_index += 1
@@ -992,8 +992,8 @@ def convert_metashape_to_colmap(
                 print()
 
     # Build images_colmap from results
-    for idx, (base_name, direction, R_c2w, t_c2w, yaw_offset) in enumerate(camera_metadata):
-        output_image_name = f"{base_name}_{direction}.jpg"
+    for idx, (base_name, direction, R_c2w, t_c2w, yaw_offset, output_ext) in enumerate(camera_metadata):
+        output_image_name = f"{base_name}_{direction}{output_ext}"
         
         R_dir = get_direction_rotation_matrix(direction)
         
