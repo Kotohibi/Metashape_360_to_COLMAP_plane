@@ -28,7 +28,7 @@ DEFAULTS = {
     "range_start": 1,
     "range_end": 10000,
     "num_workers": 4,
-    "generate_masks": True,
+    "generate_masks": False,
     "invert_mask": False,
     "yaw_offset": 0.0,
     "quiet": False,
@@ -40,8 +40,9 @@ DEFAULTS = {
     "yolo_model": "yolo11m-seg.pt",
     "apply_component_transform": False,
     "flip_vertical": True,
-    "rotate_z180": True,
+    "rotate_z180": False,
     "language": "EN",
+    "output_format": "auto",
 }
 
 VALID_DIRECTIONS = ["top", "front", "right", "back", "left", "bottom"]
@@ -72,6 +73,7 @@ UI_TEXT = {
         "range_start": "Start:",
         "range_end": "End:",
         "yaw_offset": "Yaw Offset:",
+        "output_format": "Output Format:",
         "skip_section": "Skip Directions",
         "skip_note": "(Skip cubemap generation for selected directions)",
         "mask_section": "Mask Generation",
@@ -126,6 +128,7 @@ UI_TEXT = {
         "tip_workers": "Number of worker processes for parallel processing",
         "tip_range": "Index range of images to process (0-based)",
         "tip_yaw_offset": "Per-frame yaw rotation offset (degrees)",
+        "tip_output_format": "Output image format. 'auto' uses the same format as input images (default), preserving bit depth and alpha channel",
         "tip_yolo_classes": "Comma-separated class IDs (0=person, 2=car, 3=motorcycle, 5=bus, 7=truck)",
         "tip_yolo_conf": "Minimum YOLO confidence score to keep detections (0.0-1.0)",
         "tip_overexp_threshold": "Treat pixels as overexposed when all RGB channels exceed this value",
@@ -150,6 +153,7 @@ UI_TEXT = {
         "range_start": "開始:",
         "range_end": "終了:",
         "yaw_offset": "Yawオフセット:",
+        "output_format": "出力形式:",
         "skip_section": "スキップ方向",
         "skip_note": "(選択した方向のCubemap生成をスキップします)",
         "mask_section": "マスク生成",
@@ -204,6 +208,7 @@ UI_TEXT = {
         "tip_workers": "並列処理のワーカープロセス数",
         "tip_range": "処理する画像のインデックス範囲 (0ベース)",
         "tip_yaw_offset": "フレームごとのYaw回転オフセット (degrees)",
+        "tip_output_format": "出力画像の形式。'auto'は入力画像と同じ形式を使用 (デフォルト)、ビット深度とアルファチャンネルを維持",
         "tip_yolo_classes": "カンマ区切りのクラスID (0=person, 2=car, 3=motorcycle, 5=bus, 7=truck)",
         "tip_yolo_conf": "検出を採用する最小YOLO信頼度スコア (0.0-1.0)",
         "tip_overexp_threshold": "全RGBチャンネルがこの値を超えるピクセルを露出オーバーとみなす",
@@ -290,6 +295,7 @@ class Metashape360GUI:
         self.var_range_end = tk.IntVar(value=DEFAULTS["range_end"])
         self.var_num_workers = tk.IntVar(value=DEFAULTS["num_workers"])
         self.var_yaw_offset = tk.DoubleVar(value=DEFAULTS["yaw_offset"])
+        self.var_output_format = tk.StringVar(value=DEFAULTS["output_format"])
         
         # Direction skip checkboxes
         self.var_skip_directions = {d: tk.BooleanVar(value=False) for d in VALID_DIRECTIONS}
@@ -466,6 +472,12 @@ class Metashape360GUI:
                                textvariable=self.var_yaw_offset, width=10)
         yaw_spin.grid(row=3, column=1, sticky="w", padx=5, pady=3)
         ToolTip(yaw_spin, self.t("tip_yaw_offset"))
+
+        ttk.Label(proc_tab, text=self.t("output_format")).grid(row=4, column=0, sticky="w", padx=5)
+        format_combo = ttk.Combobox(proc_tab, textvariable=self.var_output_format,
+                                     values=["auto", "jpg", "png", "tiff", "webp"], width=15, state="readonly")
+        format_combo.grid(row=4, column=1, sticky="w", padx=5, pady=3)
+        ToolTip(format_combo, self.t("tip_output_format"))
 
         # Skip directions tab
         directions_inner = ttk.Frame(skip_tab)
@@ -695,6 +707,7 @@ class Metashape360GUI:
         self.var_range_end.set(DEFAULTS["range_end"])
         self.var_num_workers.set(DEFAULTS["num_workers"])
         self.var_yaw_offset.set(DEFAULTS["yaw_offset"])
+        self.var_output_format.set(DEFAULTS["output_format"])
         self.var_generate_masks.set(DEFAULTS["generate_masks"])
         self.var_invert_mask.set(DEFAULTS["invert_mask"])
         self.var_yolo_classes.set(DEFAULTS["yolo_classes"])
@@ -747,6 +760,7 @@ class Metashape360GUI:
         cmd.extend(["--max-images", str(self.var_max_images.get())])
         cmd.extend(["--num-workers", str(self.var_num_workers.get())])
         cmd.extend(["--yaw-offset", str(self.var_yaw_offset.get())])
+        cmd.extend(["--output-format", self.var_output_format.get()])
         
         # Range
         if self.var_range_enabled.get():
@@ -1035,6 +1049,7 @@ class Metashape360GUI:
         lines.extend([
             f"num-workers={self.var_num_workers.get()}",
             f"yaw-offset={self.var_yaw_offset.get()}",
+            f"output-format={self.var_output_format.get()}",
             "",
         ])
         
@@ -1119,6 +1134,8 @@ class Metashape360GUI:
             self.var_num_workers.set(int(config["num-workers"]))
         if "yaw-offset" in config:
             self.var_yaw_offset.set(float(config["yaw-offset"]))
+        if "output-format" in config:
+            self.var_output_format.set(config["output-format"])
         
         if "range-images" in config and config["range-images"]:
             parts = config["range-images"].split("-")

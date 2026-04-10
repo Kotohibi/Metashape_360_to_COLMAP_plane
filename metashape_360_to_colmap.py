@@ -47,6 +47,64 @@ except ImportError:  # pragma: no cover - optional dependency
     HAS_YOLO = False
 
 
+def detect_image_format(image_path: Path) -> Tuple[str, str]:
+    """Detect image format and bit depth from file.
+    
+    Returns:
+        Tuple of (file_extension, mode_description)
+        file_extension: e.g., '.png', '.jpg', '.tiff'
+        mode_description: e.g., 'RGB', 'RGBA', '16-bit RGB', etc.
+    """
+    img = Image.open(image_path)
+    mode = img.mode
+    
+    # Determine file extension
+    suffix = image_path.suffix.lower()
+    if suffix in ['.jpg', '.jpeg']:
+        ext = '.jpg'
+    elif suffix in ['.png']:
+        ext = '.png'
+    elif suffix in ['.tiff', '.tif']:
+        ext = '.tiff'
+    elif suffix in ['.webp']:
+        ext = '.webp'
+    else:
+        ext = suffix
+    
+    return (ext, mode)
+
+
+def get_output_format_extension(output_format: Optional[str], input_ext: str, input_mode: str) -> Tuple[str, bool]:
+    """Get output file extension and whether to preserve alpha channel.
+    
+    Args:
+        output_format: User-specified format (e.g., 'png', 'auto') or None for auto-detect
+        input_ext: Input file extension (e.g., '.png')
+        input_mode: Input PIL mode (e.g., 'RGBA')
+    
+    Returns:
+        Tuple of (extension, preserve_alpha)
+    """
+    if output_format == 'auto' or output_format is None:
+        # Auto-detect: use input format
+        return (input_ext, 'A' in input_mode)
+    
+    # User specified format
+    output_format = output_format.lower().strip('.')
+    
+    if output_format in ['jpg', 'jpeg']:
+        return ('.jpg', False)
+    elif output_format == 'png':
+        return ('.png', True)
+    elif output_format in ['tiff', 'tif']:
+        return ('.tiff', True)
+    elif output_format == 'webp':
+        return ('.webp', True)
+    else:
+        # Unknown format, use input format
+        return (input_ext, 'A' in input_mode)
+
+
 def find_param(calib_xml: ET.Element, param_name: str) -> float:
     """Find a parameter in calibration XML, return 0.0 if not found."""
     param = calib_xml.find(param_name)
@@ -391,11 +449,22 @@ def crop_and_save_image(
     mask_image_path: Optional[str] = None,
     output_mask_path: Optional[str] = None,
     yaw_offset: float = 0.0,
+    preserve_alpha: bool = False,
 ) -> Tuple[str, str, str, np.ndarray]:
     """Crop equirectangular image and save. Optionally crop and save mask from file path. Returns (direction, output_name, output_path, metadata)."""
     equirect_image = Image.open(image_path)
-    if equirect_image.mode != "RGB":
-        equirect_image = equirect_image.convert("RGB")
+    
+    # Determine target mode based on whether we should preserve alpha
+    if preserve_alpha and equirect_image.mode == 'RGBA':
+        target_mode = 'RGBA'
+    elif equirect_image.mode in ['RGB', 'RGBA']:
+        target_mode = 'RGB'
+    else:
+        # Convert other modes to RGB
+        target_mode = 'RGB'
+    
+    if equirect_image.mode != target_mode:
+        equirect_image = equirect_image.convert(target_mode)
     
     cropped = crop_direction(
         equirect_image,
@@ -405,7 +474,23 @@ def crop_and_save_image(
         flip_vertical=flip_vertical,
         yaw_offset=yaw_offset,
     )
-    cropped.save(output_image_path, quality=100)
+    
+    # Save with appropriate format settings
+    output_path_lower = output_image_path.lower()
+    if output_path_lower.endswith('.jpg') or output_path_lower.endswith('.jpeg'):
+        # JPG doesn't support alpha, always convert to RGB
+        if cropped.mode == 'RGBA':
+            cropped = cropped.convert('RGB')
+        cropped.save(output_image_path, quality=100, optimize=True)
+    elif output_path_lower.endswith('.png'):
+        cropped.save(output_image_path, optimize=True)
+    elif output_path_lower.endswith(('.tiff', '.tif')):
+        cropped.save(output_image_path, compression='none')
+    elif output_path_lower.endswith('.webp'):
+        cropped.save(output_image_path, quality=100)
+    else:
+        # Default: try to save as-is
+        cropped.save(output_image_path, quality=100)
     
     # Crop and save mask if provided
     if mask_image_path is not None and output_mask_path is not None:
@@ -435,6 +520,7 @@ def crop_direction(
     """Rectilinear 90° crop from equirectangular using cv2.remap (cube map layout).
     
     Extracts 6 directions (top/front/right/back/left/bottom) like a cube map unfolding.
+    Preserves alpha channel if present in the input image.
     
     Args:
         yaw_offset: Additional yaw rotation in degrees to apply to the crop direction.
@@ -479,17 +565,48 @@ def crop_direction(
         map_y = (0.5 + lat / np.pi) * float(height)
     map_y = np.clip(map_y, 0.0, float(height - 1))
 
+    # Check if image has alpha channel
+    has_alpha = equirect_image.mode == 'RGBA'
+    
     # Remap (wrap horizontally, clamp vertically).
-    equirect_np = np.array(equirect_image.convert("RGB"))
-    sampled = cv2.remap(
-        equirect_np,
-        map_x.astype(np.float32),
-        map_y.astype(np.float32),
-        interpolation=cv2.INTER_LINEAR,
-        borderMode=cv2.BORDER_WRAP,
-    )
-
-    return Image.fromarray(sampled, mode="RGB")
+    # Process RGB channels
+    if has_alpha:
+        # Split into RGB and alpha channels
+        equirect_rgba = np.array(equirect_image.convert("RGBA"), dtype=np.float32)
+        equirect_rgb = equirect_rgba[:, :, :3].astype(np.uint8)
+        equirect_alpha = equirect_rgba[:, :, 3]
+        
+        # Remap RGB channels
+        sampled_rgb = cv2.remap(
+            equirect_rgb,
+            map_x.astype(np.float32),
+            map_y.astype(np.float32),
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_WRAP,
+        )
+        
+        # Remap alpha channel with same interpolation
+        sampled_alpha = cv2.remap(
+            equirect_alpha,
+            map_x.astype(np.float32),
+            map_y.astype(np.float32),
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_WRAP,
+        )
+        
+        # Combine RGB and alpha back together
+        sampled = np.dstack((sampled_rgb, sampled_alpha.astype(np.uint8)))
+        return Image.fromarray(sampled, mode="RGBA")
+    else:
+        equirect_np = np.array(equirect_image.convert("RGB"))
+        sampled = cv2.remap(
+            equirect_np,
+            map_x.astype(np.float32),
+            map_y.astype(np.float32),
+            interpolation=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_WRAP,
+        )
+        return Image.fromarray(sampled, mode="RGB")
 
 
 def convert_metashape_to_colmap(
@@ -516,6 +633,7 @@ def convert_metashape_to_colmap(
     mask_overexposure: bool = False,
     overexposure_threshold: int = 250,
     overexposure_dilate: int = 5,
+    output_format: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Convert Metashape equirectangular data to COLMAP format.
     
@@ -536,6 +654,8 @@ def convert_metashape_to_colmap(
         mask_overexposure: If True, also mask white-blown-out (overexposed) pixels.
         overexposure_threshold: Pixel value threshold (0-255) for overexposure detection.
         overexposure_dilate: Dilation radius (pixels) for overexposure mask.
+        output_format: Output image format ('png', 'jpg', 'tiff', 'webp', 'auto', or None).
+                      'auto' or None means use the same format as input images (default).
     """
     if output_dir is None:
         output_dir = xml_path.parent
@@ -581,6 +701,22 @@ def convert_metashape_to_colmap(
         if component_dict:
             for comp_id, comp_mat in component_dict.items():
                 print(f"  Component '{comp_id}': {comp_mat}")
+
+    # Detect input image format and determine output format
+    input_ext = ".jpg"  # default
+    input_mode = "RGB"  # default
+    preserve_alpha = False
+    if image_files:
+        first_image = image_files[0]
+        input_ext, input_mode = detect_image_format(first_image)
+        if verbose:
+            print(f"Detected input format: {input_ext} (mode: {input_mode})")
+    
+    # Get output format extension and alpha preservation setting
+    output_ext, preserve_alpha = get_output_format_extension(output_format, input_ext, input_mode)
+    if verbose:
+        print(f"Output format: {output_ext}, preserve alpha: {preserve_alpha}")
+
 
     camera_id = 1  # single shared intrinsic entry
     fx = fy = (crop_size / 2.0) / np.tan(np.deg2rad(fov_deg) / 2.0)
@@ -701,9 +837,9 @@ def convert_metashape_to_colmap(
 
         # Queue tasks for each direction
         for direction in directions:
-            output_image_name = f"{base_name}_{direction}.jpg"
+            output_image_name = f"{base_name}_{direction}{output_ext}"
             output_image_path = str(images_output_dir / output_image_name)
-            crop_tasks.append((str(src_image_path), direction, crop_size, output_image_path, fov_deg, flip_vertical, current_yaw_offset))
+            crop_tasks.append((str(src_image_path), direction, crop_size, output_image_path, fov_deg, flip_vertical, current_yaw_offset, preserve_alpha))
             camera_metadata.append((base_name, direction, R_c2w, t_c2w, current_yaw_offset))
 
         processed_cameras += 1
@@ -787,7 +923,7 @@ def convert_metashape_to_colmap(
         with ProcessPoolExecutor(max_workers=num_workers) as executor:
             futures = []
             for task in crop_tasks:
-                src_image_path, direction, crop_size_val, output_image_path, fov_deg_val, flip_vertical_val, yaw_offset_val = task
+                src_image_path, direction, crop_size_val, output_image_path, fov_deg_val, flip_vertical_val, yaw_offset_val, preserve_alpha_val = task
                 
                 # Determine mask file path if masks are enabled
                 mask_file_path = None
@@ -795,8 +931,14 @@ def convert_metashape_to_colmap(
                 if generate_masks:
                     mask_file_path = equirect_mask_paths.get(src_image_path)
                     if mask_file_path is not None:
+                        # Replace the output image extension with .png for mask
                         output_image_name = Path(output_image_path).name
-                        output_mask_name = output_image_name.replace(".jpg", ".png")
+                        base_output_name = output_image_name
+                        for ext in ['.jpg', '.jpeg', '.png', '.tiff', '.tif', '.webp']:
+                            if output_image_name.endswith(ext):
+                                base_output_name = output_image_name[:-len(ext)]
+                                break
+                        output_mask_name = f"{base_output_name}.png"
                         output_mask_path = str(masks_output_dir / output_mask_name)
                 
                 futures.append(
@@ -811,6 +953,7 @@ def convert_metashape_to_colmap(
                         mask_file_path,
                         output_mask_path,
                         yaw_offset_val,
+                        preserve_alpha_val,
                     )
                 )
 
@@ -1253,6 +1396,13 @@ def main() -> int:
         default=int(config["overexposure-dilate"]) if "overexposure-dilate" in config else 5,
         help="Dilation radius in pixels for the overexposure mask to cover fringe artifacts (default: 5)"
     )
+    parser.add_argument(
+        "--output-format",
+        type=str,
+        default=config.get("output-format", "auto"),
+        choices=["auto", "jpg", "jpeg", "png", "tiff", "tif", "webp"],
+        help="Output image format. 'auto' (default) uses the same format as input images, preserving bit depth and alpha channel when applicable."
+    )
 
     args = parser.parse_args()
     
@@ -1336,6 +1486,7 @@ def main() -> int:
             mask_overexposure=args.mask_overexposure,
             overexposure_threshold=args.overexposure_threshold,
             overexposure_dilate=args.overexposure_dilate,
+            output_format=args.output_format,
         )
         if not args.quiet:
             print("\nConversion complete!")
