@@ -259,6 +259,34 @@ def numpy_to_image_preserving_bitdepth(array: np.ndarray, mode: str):
         return Image.fromarray(array)
 
 
+def convert_numpy_image_to_8bit_for_jpeg(array: np.ndarray) -> np.ndarray:
+    """Convert a numpy image array to 8-bit for JPEG output.
+
+    JPEG output in this script is intended to be 8-bit only. When the crop path
+    preserves high-bit-depth PNG input as a numpy array, convert it explicitly
+    here instead of sending 16-bit data to OpenCV's generic writer.
+    """
+    if array.dtype == np.uint8:
+        converted = array
+    elif array.dtype == np.uint16:
+        # Map the full 16-bit range [0, 65535] to [0, 255].
+        converted = ((array.astype(np.uint32) + 128) // 257).astype(np.uint8)
+    elif np.issubdtype(array.dtype, np.floating):
+        max_value = float(np.nanmax(array)) if array.size else 0.0
+        if max_value <= 1.0:
+            converted = np.clip(np.round(array * 255.0), 0, 255).astype(np.uint8)
+        else:
+            converted = np.clip(np.round(array), 0, 255).astype(np.uint8)
+    else:
+        converted = np.clip(array, 0, 255).astype(np.uint8)
+
+    # JPEG does not support alpha, so drop it here if present.
+    if converted.ndim == 3 and converted.shape[2] == 4:
+        converted = converted[:, :, :3]
+
+    return converted
+
+
 def find_param(calib_xml: ET.Element, param_name: str) -> float:
     """Find a parameter in calibration XML, return 0.0 if not found."""
     param = calib_xml.find(param_name)
@@ -687,6 +715,25 @@ def crop_and_save_image(
     
     # Save with appropriate format settings based on output file extension
     output_path_lower = output_image_path.lower()
+
+    # JPEG output must always go through an 8-bit conversion path.
+    if output_path_lower.endswith('.jpg') or output_path_lower.endswith('.jpeg'):
+        if isinstance(cropped, np.ndarray):
+            cropped = convert_numpy_image_to_8bit_for_jpeg(cropped)
+            if len(cropped.shape) == 3 and cropped.shape[2] == 3:
+                cropped = Image.fromarray(cropped, 'RGB')
+            elif len(cropped.shape) == 2:
+                cropped = Image.fromarray(cropped, 'L')
+            else:
+                cropped = Image.fromarray(cropped)
+        elif isinstance(cropped, Image.Image) and cropped.mode not in ['RGB', 'L']:
+            cropped = cropped.convert('RGB')
+
+        cropped.save(output_image_path, quality=100, optimize=True)
+        if verbose:
+            print(f"    Saved as JPG (8-bit, no alpha)")
+        output_name = Path(output_image_path).name
+        return (direction, output_name, output_image_path, np.array([]))
     
     # Handle numpy array (16-bit) separately - use OpenCV for saving
     if isinstance(cropped, np.ndarray):
@@ -732,14 +779,7 @@ def crop_and_save_image(
             # Shouldn't reach here - 16-bit should have been handled above
             return
     
-    if output_path_lower.endswith('.jpg') or output_path_lower.endswith('.jpeg'):
-        # JPG doesn't support alpha or bit depths > 8, convert to RGB 8-bit
-        if isinstance(cropped, Image.Image) and cropped.mode not in ['RGB', 'L']:
-            cropped = cropped.convert('RGB')
-        cropped.save(output_image_path, quality=100, optimize=True)
-        if verbose:
-            print(f"    Saved as JPG (8-bit, no alpha)")
-    elif output_path_lower.endswith('.png'):
+    if output_path_lower.endswith('.png'):
         # PNG supports alphaand bit depths
         if isinstance(cropped, Image.Image):
             cropped.save(output_image_path, optimize=True)
