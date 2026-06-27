@@ -21,6 +21,7 @@ DEFAULTS = {
     "images": "./equirect/",
     "xml": "./cameras.xml",
     "ply": "./sparse_point_cloud.ply",
+    "external_masks": "",
     "output": "./colmap_dataset/",
     "crop_size": 1920,
     "fov_deg": 90.0,
@@ -62,6 +63,7 @@ UI_TEXT = {
         "images_label": "Input Images Folder:",
         "xml_label": "Metashape XML:",
         "ply_label": "PLY File (Optional):",
+        "external_masks_label": "External Masks Folder (Optional):",
         "output_label": "Output Folder:",
         "browse": "Browse...",
         "proc_section": "Processing Options",
@@ -121,6 +123,7 @@ UI_TEXT = {
         "tip_images": "Folder containing equirectangular images",
         "tip_xml": "cameras.xml exported from Metashape",
         "tip_ply": "Point cloud file exported from Metashape (optional)",
+        "tip_external_masks": "Folder with pre-generated 360 masks (e.g. from SAM3). PNG files must have the same name as the input images. They will be cropped to the 6 views alongside the images.",
         "tip_output": "Destination folder for COLMAP dataset output",
         "tip_crop_size": "Output image size (pixels)",
         "tip_fov": "Horizontal field of view for rectilinear crops (degrees)",
@@ -142,6 +145,7 @@ UI_TEXT = {
         "images_label": "入力画像フォルダ:",
         "xml_label": "Metashape XML:",
         "ply_label": "PLYファイル (任意):",
+        "external_masks_label": "外部マスクフォルダ (任意):",
         "output_label": "出力フォルダ:",
         "browse": "参照...",
         "proc_section": "処理オプション",
@@ -201,6 +205,7 @@ UI_TEXT = {
         "tip_images": "Equirectangular画像が含まれるフォルダ",
         "tip_xml": "Metashapeからエクスポートしたcameras.xml",
         "tip_ply": "Metashapeからエクスポートした点群ファイル (任意)",
+        "tip_external_masks": "事前に生成した360°マスクのフォルダ (例: SAM3から生成)。PNGファイルは入力画像と同じファイル名にしてください。6方向にクロップされます。",
         "tip_output": "COLMAP形式のデータセット出力先",
         "tip_crop_size": "出力画像のサイズ (pixels)",
         "tip_fov": "Rectilinear cropsの水平視野角 (degrees)",
@@ -284,6 +289,7 @@ class Metashape360GUI:
         self.var_images = tk.StringVar(value=DEFAULTS["images"])
         self.var_xml = tk.StringVar(value=DEFAULTS["xml"])
         self.var_ply = tk.StringVar(value=DEFAULTS["ply"])
+        self.var_external_masks = tk.StringVar(value=DEFAULTS["external_masks"])
         self.var_output = tk.StringVar(value=DEFAULTS["output"])
         
         # Processing options
@@ -405,10 +411,15 @@ class Metashape360GUI:
         self.add_path_entry(paths_frame, self.t("ply_label"), self.var_ply,
                            is_folder=False, row=2, filetypes=[("PLY files", "*.ply")],
                            tooltip=self.t("tip_ply"))
-        
+
+        # External masks folder (optional)
+        self.add_path_entry(paths_frame, self.t("external_masks_label"), self.var_external_masks,
+                           is_folder=True, row=3,
+                           tooltip=self.t("tip_external_masks"))
+
         # Output folder
         self.add_path_entry(paths_frame, self.t("output_label"), self.var_output,
-                           is_folder=True, row=3,
+                           is_folder=True, row=4,
                            tooltip=self.t("tip_output"))
         
         # ===== Tabbed Options Section =====
@@ -698,6 +709,7 @@ class Metashape360GUI:
         self.var_images.set(DEFAULTS["images"])
         self.var_xml.set(DEFAULTS["xml"])
         self.var_ply.set(DEFAULTS["ply"])
+        self.var_external_masks.set(DEFAULTS["external_masks"])
         self.var_output.set(DEFAULTS["output"])
         self.var_crop_size.set(DEFAULTS["crop_size"])
         self.var_fov_deg.set(DEFAULTS["fov_deg"])
@@ -753,6 +765,8 @@ class Metashape360GUI:
         
         if self.var_ply.get().strip():
             cmd.extend(["--ply", self.var_ply.get()])
+        if self.var_external_masks.get().strip():
+            cmd.extend(["--external-masks", self.var_external_masks.get()])
         
         # Processing options
         cmd.extend(["--crop-size", str(self.var_crop_size.get())])
@@ -1036,6 +1050,7 @@ class Metashape360GUI:
             f"images={self.var_images.get()}",
             f"xml={self.var_xml.get()}",
             f"ply={self.var_ply.get()}",
+            f"external-masks={self.var_external_masks.get()}",
             f"output={self.var_output.get()}",
             "",
             f"crop-size={self.var_crop_size.get()}",
@@ -1154,6 +1169,9 @@ class Metashape360GUI:
         def parse_bool(val):
             return val.lower() in ("true", "1", "yes")
         
+        if "external-masks" in config:
+            self.var_external_masks.set(config["external-masks"])
+
         if "generate-masks" in config:
             self.var_generate_masks.set(parse_bool(config["generate-masks"]))
         if "invert-mask" in config:
