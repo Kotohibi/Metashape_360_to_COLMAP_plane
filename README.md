@@ -39,7 +39,19 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
       - Real Scale 3DGS with AprilTag
       - User guide |  English : https://x.gd/CoWJA | Japanese : https://x.gd/Isahb
       - https://x.com/kotohibi_3d/status/2052254524036047299
-
+    * V1.1.0
+      - With AprilTag, not only real scale 3DGS but also auto origin, leveling, orientation
+      - You can easily align several 3DGSs and compare them for Time-series observations.
+      - https://x.com/kotohibi_3d/status/2063237342354370630
+    * V1.2.0
+      - Overlap filter (auto remove overlap face between cubemap and planar)
+      - https://x.com/kotohibi_3d/status/2078088377371681237
+    * V1.3.0
+      - Parallax-based cubemap reduction,This feature enables the efficient reduction of duplicate frames during drone hovering or when shooting at irregular speeds.
+      - https://x.com/kotohibi_3d/status/2086408535768973659
+    * V1.4.0
+      - Added support for converting georeferenced data from Metashape Pro.   (Note: This is currently a developer option. Please use it at your own risk.)
+      - https://x.com/kotohibi_3d/status/2087452130697453809
 ---
 
 Refer to the detail workflow
