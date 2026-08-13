@@ -16,40 +16,40 @@ Convert Agisoft Metashape equirectangular (spherical) camera exports into COLMAP
        - See https://x.com/naribubu/status/2031004096975781946
     * Export PNG file support
        - For better 3DGS training
-    * V0.5.0
+    * V0.5.0 (2026-04-04)
       - Coordinate conversion function for colmap data <br> * This function is developer option. Not supported*
         - https://x.com/kotohibi_3d/status/2040418910470910178
         - How to utilize with LiDAR SLAM : https://x.com/kotohibi_3d/status/2040637580149145909
-    * V0.6.0
+    * V0.6.0 (2026-04-09)
       - Supported custom mask and fixed some bugs.
         - https://x.com/kotohibi_3d/status/2041909510047199539
-    * V0.7.0
+    * V0.7.0 (2026-04-16)
       - Able to export XMP file for RealityScan
         - https://x.com/kotohibi_3d/status/2044779767002771827
-    * V0.8.0
+    * V0.8.0 (2026-04-25)
       - Available 360 and planar mixed image workflow
       - When including planar images in camera.xml, undistort them as pinhole model. (Mixed SfM needed in Metashape in advance)
       - Even able to export camera pose both of cubemap and planar in XMP files for RealityScan (*dev option*)
       - https://x.com/kotohibi_3d/status/2048018154304188725
-    * V0.9.0
+    * V0.9.0 (2026-04-30)
       - It can specify the resolution rate and skip frames for each direction of extraction.Even by reducing data in directions with less texture (sky, ground) and directions with less parallax (front and back), you can retain 3DGS quality while reducing the amount of data. 
       - It is possible to perform SfM with a sufficient number of frames and then reduce data when 3DGS training.
       - https://x.com/kotohibi_3d/status/2049747035344224515
-    * V1.0.0
+    * V1.0.0 (2026-05-07)
       - Real Scale 3DGS with AprilTag
       - User guide |  English : https://x.gd/CoWJA | Japanese : https://x.gd/Isahb
       - https://x.com/kotohibi_3d/status/2052254524036047299
-    * V1.1.0
+    * V1.1.0 (2026-06-06)
       - With AprilTag, not only real scale 3DGS but also auto origin, leveling, orientation
       - You can easily align several 3DGSs and compare them for Time-series observations.
       - https://x.com/kotohibi_3d/status/2063237342354370630
-    * V1.2.0
+    * V1.2.0 (2026-07-17)
       - Overlap filter (auto remove overlap face between cubemap and planar)
       - https://x.com/kotohibi_3d/status/2078088377371681237
-    * V1.3.0
+    * V1.3.0 (2026-08-09)
       - Parallax-based cubemap reduction,This feature enables the efficient reduction of duplicate frames during drone hovering or when shooting at irregular speeds.
       - https://x.com/kotohibi_3d/status/2086408535768973659
-    * V1.4.0
+    * V1.4.0 (2026-08-12)
       - Added support for converting georeferenced data from Metashape Pro.   (Note: This is currently a developer option. Please use it at your own risk.)
       - https://x.com/kotohibi_3d/status/2087452130697453809
 ---
