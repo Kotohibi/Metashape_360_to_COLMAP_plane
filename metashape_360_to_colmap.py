@@ -732,6 +732,24 @@ def crop_and_save_image(
         cropped.save(output_image_path, quality=100, optimize=True)
         if verbose:
             print(f"    Saved as JPG (8-bit, no alpha)")
+
+        # Crop and save mask for JPEG images (must be done before early return)
+        if mask_image_path is not None and output_mask_path is not None:
+            try:
+                mask_image = Image.open(mask_image_path)
+                cropped_mask = crop_direction(
+                    mask_image,
+                    direction,
+                    crop_size,
+                    fov_deg=fov_deg,
+                    flip_vertical=flip_vertical,
+                    yaw_offset=yaw_offset,
+                )
+                if isinstance(cropped_mask, Image.Image):
+                    cropped_mask.save(output_mask_path)
+            except Exception as e:
+                pass
+
         output_name = Path(output_image_path).name
         return (direction, output_name, output_image_path, np.array([]))
     
@@ -759,6 +777,24 @@ def crop_and_save_image(
                         f.flush()
                 except:
                     pass
+
+                # Crop and save mask for 16-bit images (must be done before early return)
+                if mask_image_path is not None and output_mask_path is not None:
+                    try:
+                        mask_image = Image.open(mask_image_path)
+                        cropped_mask = crop_direction(
+                            mask_image,
+                            direction,
+                            crop_size,
+                            fov_deg=fov_deg,
+                            flip_vertical=flip_vertical,
+                            yaw_offset=yaw_offset,
+                        )
+                        if isinstance(cropped_mask, Image.Image):
+                            cropped_mask.save(output_mask_path)
+                    except Exception as e:
+                        pass
+
                 return
         except Exception as e:
             # If OpenCV saving fails, fall through to try PIL
@@ -1006,6 +1042,7 @@ def convert_metashape_to_colmap(
     skip_component_transform_for_ply: bool = True,
     skip_directions: Optional[list] = None,
     generate_masks: bool = False,
+    external_masks_dir: Optional[Path] = None,
     yolo_model_path: str = "yolo11n-seg.pt",
     yolo_conf: float = 0.25,
     invert_mask: bool = False,
@@ -1061,6 +1098,11 @@ def convert_metashape_to_colmap(
         if verbose:
             print(f"Loading YOLO model: {yolo_model_path}")
         yolo_model = YOLO(yolo_model_path)
+    elif external_masks_dir is not None:
+        masks_output_dir = output_dir / "masks"
+        masks_output_dir.mkdir(parents=True, exist_ok=True)
+        if verbose:
+            print(f"Using external masks from: {external_masks_dir}")
 
     if verbose:
         print(f"Parsing Metashape XML: {xml_path}")
@@ -1216,8 +1258,8 @@ def convert_metashape_to_colmap(
             print(f"  R_c2w:\n{R_c2w}")
             print(f"  t_c2w: {t_c2w}")
 
-        # Collect equirectangular images for mask generation
-        if generate_masks and str(src_image_path) not in equirect_mask_paths:
+        # Collect equirectangular images for mask generation or external mask lookup
+        if (generate_masks or external_masks_dir is not None) and str(src_image_path) not in equirect_mask_paths:
             equirect_images_to_process.append((str(src_image_path), base_name))
 
         # Calculate yaw offset for this frame
@@ -1302,6 +1344,22 @@ def convert_metashape_to_colmap(
         if verbose:
             print(f"  Completed {len(equirect_mask_paths)} masks")
 
+    # Populate mask paths from external masks folder if provided
+    if external_masks_dir is not None and not generate_masks:
+        found = 0
+        missing = 0
+        for src_image_path, base_name in equirect_images_to_process:
+            mask_path = external_masks_dir / f"{base_name}.png"
+            if mask_path.exists():
+                equirect_mask_paths[src_image_path] = str(mask_path)
+                found += 1
+            else:
+                missing += 1
+                if verbose:
+                    print(f"  Warning: no external mask found for {base_name} (expected {mask_path.name})")
+        if verbose:
+            print(f"  External masks: {found} found, {missing} missing")
+
     # Process crops in parallel
     if crop_tasks:
         if verbose:
@@ -1319,7 +1377,7 @@ def convert_metashape_to_colmap(
                 # Determine mask file path if masks are enabled
                 mask_file_path = None
                 output_mask_path = None
-                if generate_masks:
+                if generate_masks or external_masks_dir is not None:
                     mask_file_path = equirect_mask_paths.get(src_image_path)
                     if mask_file_path is not None:
                         # Replace the output image extension with .png for mask
@@ -1717,6 +1775,12 @@ def main() -> int:
         help="Generate person masks using YOLO and crop them alongside images"
     )
     parser.add_argument(
+        "--external-masks",
+        type=Path,
+        default=Path(config["external-masks"]) if "external-masks" in config and config["external-masks"] else None,
+        help="Folder containing pre-generated 360 masks (PNG files with same stem as input images). They will be cropped to the 6 views alongside the images."
+    )
+    parser.add_argument(
         "--yolo-model",
         type=str,
         default=config.get("yolo-model", "yolo11n-seg.pt"),
@@ -1868,6 +1932,7 @@ def main() -> int:
             verbose=not args.quiet,
             skip_directions=skip_directions_list,
             generate_masks=args.generate_masks,
+            external_masks_dir=args.external_masks,
             yolo_model_path=args.yolo_model,
             yolo_conf=args.yolo_conf,
             invert_mask=args.invert_mask,
